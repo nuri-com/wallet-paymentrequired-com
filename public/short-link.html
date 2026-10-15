@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>Opening your link</title></head>
+<body><p id="status" role="status">Opening your link…</p><button id="retry" type="button" hidden>Try again</button><noscript>Enable JavaScript to open this secure link.</noscript>
+<script type="module">
+import { resolveShortLink } from "./short-link.mjs";
+// Keep the original capability in the fragment until successful replacement,
+// so both this button and a browser reload resolve exactly the same link.
+const link = location.href;
+const status = document.getElementById("status");
+const retry = document.getElementById("retry");
+let busy = false;
+let finished = false;
+async function openLink() {
+  if (busy || finished) return;
+  if (!new URL(link).hash.slice(1)) {
+    finished = true;
+    status.textContent = "This link is incomplete.";
+    return;
+  }
+  busy = true;
+  retry.hidden = true;
+  retry.disabled = true;
+  status.textContent = "Opening your link…";
+  let responseStatus;
+  try {
+    // The shared resolver validates source and target but flattens HTTP errors.
+    // Observe only the status at its existing fetch boundary; keep its checks.
+    const url = await resolveShortLink(link, async (...args) => {
+      const response = await fetch(...args);
+      responseStatus = response.status;
+      return response;
+    });
+    finished = true;
+    location.replace(url);
+  } catch (error) {
+    const invalid = error?.message === "This link is invalid.";
+    const retryable = !finished && !invalid && (responseStatus === undefined
+      || responseStatus === 200 || responseStatus === 408 || responseStatus === 429
+      || responseStatus >= 500);
+    finished = !retryable;
+    status.textContent = retryable ? "Could not open your link. Try again."
+      : invalid ? "This link is invalid." : "This link is no longer available.";
+    retry.hidden = !retryable;
+    retry.disabled = !retryable;
+  } finally {
+    busy = false;
+  }
+}
+retry.addEventListener("click", openLink);
+openLink();
+</script></body></html>

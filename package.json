@@ -1,0 +1,40 @@
+{
+  "name": "paymentrequired-wallet",
+  "version": "0.76.0-alpha.1",
+  "private": true,
+  "type": "module",
+  "description": "Wallet service of paymentrequired.com: the agent Safe wallet tool for AI agents (wallet.paymentrequired.com)",
+  "scripts": {
+    "start": "node src/wallet-server.mjs",
+    "build:privy": "esbuild public/privy-bridge.jsx --bundle --minify --format=iife --platform=browser --target=es2022 --outfile=public/privy-bridge.js",
+    "precheck": "for f in src/*.mjs public/short-link.mjs; do node --check \"$f\" || exit 1; done",
+    "check": "npm run precheck && node scripts/check-import-closure.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@privy-io/node": "0.33.0",
+    "@x402/core": "2.23.0",
+    "@x402/evm": "2.23.0",
+    "@zerodev/ecdsa-validator": "5.4.9",
+    "@zerodev/permissions": "5.6.3",
+    "@zerodev/sdk": "5.5.7",
+    "ethers": "^6.16.0",
+    "mppx": "0.8.19",
+    "ox": "0.14.33",
+    "viem": "2.56.0"
+  },
+  "devDependencies": {
+    "@privy-io/react-auth": "3.38.0",
+    "esbuild": "0.28.2",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "overrides": {
+    "axios": "1.18.0",
+    "viem": {
+      "ws": "8.21.0"
+    }
+  }
+}

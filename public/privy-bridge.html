@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Confirm this request</title>
+    <style>
+      :root { color-scheme:light; --ink:#0f172a; --muted:#5f6f8c; --line:#d8e0ec; --accent:#3258d8; --accent-strong:#2444b8; --bg:#f7f9fc; --panel:#fff; --ok:#176b45; --warn:#8a3a20; }
+      * { box-sizing:border-box; }
+      body { margin:0; min-height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--ink); font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+      main { width:min(520px,calc(100vw - 32px)); background:var(--panel); border:1px solid var(--line); border-radius:12px; box-shadow:0 12px 30px rgba(15,23,42,.08); padding:28px; }
+      h1 { margin:0 0 6px; font-size:22px; line-height:1.2; }
+      p.sub { margin:0 0 18px; color:var(--muted); }
+      dl { display:grid; grid-template-columns:100px 1fr; gap:10px 16px; margin:0 0 18px; }
+      dt { color:var(--muted); }
+      dd { margin:0; min-width:0; overflow-wrap:anywhere; }
+      #root > main > button { width:100%; border:0; border-radius:8px; background:var(--accent); color:#fff; font:inherit; font-weight:700; padding:14px 18px; cursor:pointer; }
+      #root > main > button:hover:not(:disabled) { background:var(--accent-strong); }
+      #root > main > button:disabled { cursor:not-allowed; opacity:.58; }
+      #root > main > button.secondary { background:#e8edf8; color:var(--ink); }
+      #root > main > button.link { margin-top:8px; padding:10px; background:transparent; color:var(--accent); font-weight:600; }
+      #message, #consent-message { margin:0 0 18px; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--bg); font-family:inherit; font-size:15px; line-height:1.45; white-space:pre-wrap; overflow-wrap:anywhere; }
+      #status { margin-top:16px; color:var(--muted); overflow-wrap:anywhere; }
+      #status[data-state="done"] { color:var(--ok); }
+      #status[data-state="error"] { color:var(--warn); }
+    </style>
+    <script>window.__NURI_PRIVY_CONFIG__=__PRIVY_CONFIG__;</script>
+    <script src="./privy.js" defer></script>
+  </head>
+  <body><div id="root"><main><p role="status">Connecting…</p><noscript>Enable JavaScript to continue.</noscript></main></div></body>
+</html>

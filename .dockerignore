@@ -1,0 +1,15 @@
+# Runtime build inputs only. Never send history, env, keys or state.
+*
+!Dockerfile
+!package.json
+!package-lock.json
+!src/
+!src/**
+!public/
+!public/**
+public/privy-bridge.js
+**/.env*
+**/*.key
+**/*.pem
+**/*.p12
+**/*.pfx

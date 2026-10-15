@@ -1,0 +1,28 @@
+{
+  "about": "Paid web services an agent can use straight away with wallet action=pay (x402, USDC on Base mainnet). No account, no API key: the agent wallet pays per call. Checked by this service on the date shown. Prices are the seller's and can change; set max_amount to cap what one payment may cost.",
+  "how": "wallet {action:'pay', url, method, body, max_amount, wallet_key, request_id} pays it from the agent wallet and returns { status:'done', receipt:{ tx, amount, to }, resource }. wallet {action:'discover', query} lists more paid services with their price.",
+  "services": [
+    {
+      "id": "browser-use-session",
+      "name": "Browser Use — a cloud browser that does a task for you",
+      "url": "https://x402.api.browser-use.com/api/v3/sessions",
+      "method": "POST",
+      "request_body_example": { "task": "Go to example.com and tell me the page title" },
+      "what_you_get": "A browser session id; poll GET https://x402.api.browser-use.com/api/v3/sessions/{id} until status is stopped, then read output.",
+      "price": "Credit top-up: 1 or 5 USDC, or up to 100 USDC per payment, credited to the paying wallet and carried over. Managing a session is free.",
+      "docs": "https://docs.browser-use.com/cloud/guides/x402",
+      "verified": "2026-09-26"
+    },
+    {
+      "id": "exa-search",
+      "name": "Exa — web search for agents",
+      "url": "https://api.exa.ai/search",
+      "method": "POST",
+      "request_body_example": { "query": "latest MCP specification", "numResults": 3, "type": "auto" },
+      "what_you_get": "Search results with titles, urls and text snippets.",
+      "price": "About 0.007 USDC per search.",
+      "docs": "https://docs.exa.ai",
+      "verified": "2026-09-26"
+    }
+  ]
+}
