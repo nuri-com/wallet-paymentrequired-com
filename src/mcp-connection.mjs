@@ -280,6 +280,14 @@ export function createMcpConnection({ bridge, accountFlow, wallet, account, bank
       if (typeof args?.session === "string") {
         // Identity handoff: a pass minted by another service qualifies here first (src/identity-handoff.mjs).
         await identity?.ensure?.(args.session, { signal }).catch(() => false);
+        // A broker-bound connect link a tool handed out with its pass (wallet balance guest claim,
+        // lost-key relink): adopt a delivered result first, the same hydrate as the request_id path (:339).
+        if (broker) {
+          let link = null;
+          try { link = bridge.requireSession(args.session.split(".")[0]); } catch { link = null; }
+          if (link?.status === "pending" && link.brokerRequestId && link.context?.kind === "mcp_connection" && !link.context.grantFor && Date.now() < link.expiresAt)
+            await broker.hydrate(args.session.split(".")[0]).catch((error) => logEvent("warn", "root_signer_hydrate_failed", { error: String(error?.message || error).slice(0, 80) }));
+        }
         if (name === "bank" || name === "account") { const grant = await bankGrant(args.session, { signal }); if (grant) return { content: [{ type: "text", text: JSON.stringify(grant) }], structuredContent: grant, isError: false }; }
         // Expiry UX (D-QUORUM C): a session-only tool whose connection ran out (or was
         // purged) answers with the connect link, not a two-hop "call account".

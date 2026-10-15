@@ -194,7 +194,7 @@ function unitsOfDecimal(value, fallback) {
   return decimalToUnits(value, 6);
 }
 
-export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bridge, walletPay, spendPolicy, playground, publicBase, privyApp, merchantFetch, bank, services, discoveryFetch = fetch, safeLimits, consolidate = true } = {}) {
+export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bridge, walletPay, spendPolicy, playground, publicBase, privyApp, merchantFetch, bank, services, discoveryFetch = fetch, safeLimits, consolidate = true, broker = null } = {}) {
   if (!accountFlow || typeof accountFlow.authorized !== "function") throw new Error("wallet_tool_deps_invalid: the wallet tool needs the account flow with authorized. Wire it from the catalog builder.");
   if (typeof path !== "string" || !path) throw new Error("wallet_tool_deps_invalid: the wallet tool needs a durable database path. Wire it from the catalog builder.");
 
@@ -296,12 +296,20 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
   // The same connect link connect_required mints (src/mcp-connection.mjs), so a
   // model sees one link shape everywhere. Best-effort: with no bridge wired the
   // sentence alone still names the next step.
+  // claimLinks (RAM): guest wallet id -> its newest broker-bound claim link, so a wallet_key-only
+  // balance can adopt the tap (finishTap below) the way the local callback ran onTap at once.
+  const claimLinks = new Map();
   async function connectLink(walletId, { signal } = {}) {
     try {
       if (!bridge || typeof bridge.createSession !== "function") return null;
       const minted = await mintConnectApproval(bridge, { walletId });
       signal?.throwIfAborted();
-      return typeof minted?.approval_url === "string" ? minted : null;
+      // Root signer broker: the same registration connect_wallet does (src/mcp-connection.mjs:338), so this
+      // link opens the signer too; the tap comes back through broker hydrate. No broker = the local link.
+      const url = broker ? (await broker.register(minted.request_id))?.approvalUrl : minted?.approval_url;
+      if (typeof url !== "string") return null;
+      if (broker && walletId) claimLinks.set(walletId, minted.request_id);
+      return { ...minted, approval_url: url };
     } catch { return null; }
   }
 
@@ -464,7 +472,10 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
 
   async function balance(args, { signal } = {}) {
     if (args.new === "true") args = { ...args, new: true }; if (args.wallet_key === undefined && !args.session && args.new !== true) return await askFirst(); const fk = typeof args.session === "string" && args.session ? args.session.split(".")[0] : null, open = fk ? openFunds.get(fk) : null; if (open && Date.now() - open.at < 30 * 60_000) await fund({ ...args, action: "fund", amount: open.amount, ...(open.request_id ? { request_id: open.request_id } : {}) }, { signal }).catch(() => null); else if (open) openFunds.delete(fk); const wallet = await resolveWallet(args, { signal }); const merged = await mergeIntoFirst({ agentWallet, opRequestId, unitsToDecimal, unconfirmed: UNCONFIRMED }, args, consolidate ? wallet : { ...wallet, token: undefined }, { signal }); // models also send new as the text "true" (live 2026-09-28); without a token mergeIntoFirst only selects the newest usable wallet, never sends (split role)
-    if (merged?.first) Object.assign(wallet, merged.first); const claim = await finishTap(wallet, { signal });
+    if (merged?.first) Object.assign(wallet, merged.first);
+    const shown = broker && !wallet.claimed ? claimLinks.get(wallet.id) : undefined; // tapped on the signer: adopt it first (bridge effects run onTap)
+    if (shown) { const state = await broker.hydrate(shown).catch(() => null); if (state && state.status !== "pending") claimLinks.delete(wallet.id); }
+    const claim = await finishTap(wallet, { signal });
     if (claim?.status === "claimed") { wallet.claimed = true; wallet.owner = claim.wallet?.owner_address; }
     // The hand-over replaced the access: from here on only the new key opens this wallet.
     if (typeof claim?.wallet_key === "string") wallet.token = claim.wallet_key;
