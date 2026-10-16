@@ -5,6 +5,22 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Wallet parity v3, code b986f09a8a43a669140cf8c6c61618a65c78b4bb, 2026-10-16 (source Emin; implementer Hermes/Opus 5.5; unreleased, not deployed)
+
+- Supersedes the creation-order/newest-32 behavior described below. Discover all pending unexpired broker claim rows,
+  select the least broker `approvedAt` after a second unresolved-link scan, and share the election across session,
+  request_id and wallet_key entry points (`src/browser-session-store.mjs:52-61`, `src/signer-broker-hook.mjs:94-97,117-166`).
+- Unreadable results, unknown status, metadata mismatch and equal earliest timestamps stop adoption; no later-owner
+  fallback or ACK. Existing envelope/signature/binding/expiry/replay validation and persist-before-ACK stay in the bridge
+  (`src/signer-broker-hook.mjs:104-114,141-165`, `src/browser-bridge.mjs:484-530`).
+- Broker HTTP headers/body share a 3 s deadline; errors suppress further network calls through this client for 5 s,
+  including balance's subsequent registration (`src/root-signer-client.mjs:14-54`). Runtime timing UNVERIFIED.
+- Exact first-tap parity remains contract-blocked: Signer uses millisecond `Date.now()` without a total-order token and
+  deletes submitted results after 300 s (sibling approved source `paymentrequired-signer/src/root-signer-store.mjs:25,33,53-54`,
+  `paymentrequired-signer/src/root-signer-envelope.mjs:17`). Ties fail closed; lost results cannot be reconstructed.
+  No broker contract change made. Clock monotonicity, expired-session retention and end-to-end behavior UNVERIFIED;
+  parent cloud check/build/fixtures required. No product execution on Mac, deploy, live signatures or payments.
+
 ## Signer parity follow-up: durable guest claim links, code 9e9fe4677558, 2026-10-16 (source Emin; Hermes/Opus 5.5; unreleased, not deployed)
 
 - RAM `claimLinks` removed. wallet_key balance on an unclaimed wallet now hydrates every stored pending broker-bound
