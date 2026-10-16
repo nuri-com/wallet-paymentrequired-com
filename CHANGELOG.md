@@ -5,6 +5,15 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Signer parity follow-up: durable guest claim links, code 9e9fe4677558, 2026-10-16 (source Emin; Hermes/Opus 5.5; unreleased, not deployed)
+
+- RAM `claimLinks` removed. wallet_key balance on an unclaimed wallet now hydrates every stored pending broker-bound
+  claim row of that wallet (`context.walletId`), oldest first, stops at the first approved one
+  (`src/browser-session-store.mjs:52-63,69-71`, `src/signer-broker-hook.mjs:109-121`, `src/mcp-wallet-tool.mjs:478-480`).
+  Survives restart and newer links, like the local callback.
+- Broker register failure: no link (never a wallet-local one), logged `root_signer_register_failed`, next sentence says retry
+  (`src/mcp-wallet-tool.mjs:308-309,505`).
+
 ## Signer parity: guest claim link, code a7e7f189d7c1, 2026-10-16 (source Emin; Hermes/Opus 5.5; unreleased, not deployed)
 
 - `wallet balance` guest claim link now registers with the root signer like connect_wallet, so with `ROOT_SIGNER_URL` set it
