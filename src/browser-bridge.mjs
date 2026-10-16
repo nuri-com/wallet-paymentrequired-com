@@ -481,14 +481,18 @@ class BrowserBridge {
   // session is never deleted while a retained broker result may still be read back.
   // Idempotent: status approved + same brokerDigest answers ok again so the ACK can be repeated
   // after a restart; a different digest for an adopted session is rejected.
-  async acceptBrokerResult(sessionId, { envelope, digest, approvedAt } = {}, { open, consumerId } = {}) {
+  async acceptBrokerResult(sessionId, { envelope, digest, approvedAt, submitOrder } = {}, { open, consumerId, signal, deadline = Infinity } = {}) {
     const session = this.requireSession(sessionId);
     const digestValue = requiredString(digest, "digest");
-    if (session.status === "approved") {
-      if (session.brokerDigest && session.brokerDigest === digestValue) return { ok: true, replay: true };
-      throw new Error("session_already_used");
-    }
-    if (session.status !== "pending") throw new Error("session_already_used");
+    const guest = consumerId === "wallet" && session.context?.kind === "mcp_connection" && session.context.walletId && !session.context.grantFor;
+    const replay = session.status === "approved";
+    signal?.throwIfAborted();
+    if (Date.now() >= deadline) throw new Error("broker_deadline");
+    if (replay && (!session.brokerDigest || session.brokerDigest !== digestValue)) throw new Error("session_already_used");
+    if (guest && (!Number.isSafeInteger(submitOrder) || submitOrder < 1
+      || (session.brokerSubmitOrder !== undefined && session.brokerSubmitOrder !== submitOrder))) throw new Error("broker_claim_order_unknown");
+    if (replay && (!guest || session.brokerApplied === true)) return { ok: true, replay: true };
+    if (!replay && session.status !== "pending") throw new Error("session_already_used");
     if (!session.brokerRequestId) throw new Error("session_not_broker_bound");
     const submittedAt = Number(approvedAt);
     if (!Number.isSafeInteger(submittedAt)) throw new Error("broker_approved_at_invalid");
@@ -517,17 +521,28 @@ class BrowserBridge {
     const result = buildApprovedResult(payload, session);
     const hook = { sessionId, session, payload, result, wirexLogin: this.wirexLogin };
     this.effects?.prePersist?.(hook);
-    if (session.context.kind === "mcp_connection") { session.context.connectedAt = Date.now(); session.expiresAt = session.context.connectedAt + connectionTtlMs(); }
+    signal?.throwIfAborted();
+    if (Date.now() >= deadline) throw new Error("broker_deadline");
+    if (guest) {
+      if (!this.sessionStore) throw new Error("guest_tap_store_required");
+      if (typeof this.effects?.recordBroker !== "function") throw new Error("guest_tap_recorder_required");
+      this.effects.recordBroker({ ...hook, signal, deadline });
+    }
+    signal?.throwIfAborted();
+    if (Date.now() >= deadline) throw new Error("broker_deadline");
+    if (!replay && session.context.kind === "mcp_connection") { session.context.connectedAt = Date.now(); session.expiresAt = session.context.connectedAt + connectionTtlMs(); }
     session.brokerDigest = digestValue;
+    if (guest) session.brokerSubmitOrder = submitOrder;
     this.persistSession(sessionId, { ...session, privyAppId: session.privyAppId,
-      partner: session.partner, status: "approved", result });
+      partner: session.partner, status: "approved", result, ...(guest ? { brokerApplied: true } : {}) });
     this.effects?.postPersist?.(hook);
     zeroize(session.privateKey);
     session.privateKey = null;
     session.status = "approved";
     session.result = result;
-    this.effects?.detached?.(hook);
-    return { ok: true, replay: false };
+    if (guest) session.brokerApplied = true;
+    else this.effects?.detached?.(hook);
+    return { ok: true, replay };
   }
 
   // Binds a pending session to its broker request (C0 §1 amendment): stored in the same row so
@@ -638,6 +653,8 @@ class BrowserBridge {
         // Broker binding (C0 §1 amendment): same row, so a restart re-reads the same result.
         ...(session.brokerRequestId ? { brokerRequestId: session.brokerRequestId, brokerExpiresAt: session.brokerExpiresAt ?? null, brokerExtras: session.brokerExtras ?? [] } : {}),
         ...(session.brokerDigest ? { brokerDigest: session.brokerDigest } : {}),
+        ...(session.brokerSubmitOrder !== undefined ? { brokerSubmitOrder: session.brokerSubmitOrder } : {}),
+        ...(session.brokerApplied === true ? { brokerApplied: true } : {}),
       }),
     });
   }
@@ -661,10 +678,13 @@ class BrowserBridge {
     let privateKey = null;
     if (data.status === "pending") {
       if (data.recoveryVersion !== 1 || !validRecoveryLink(data, sessionId, row.expires_at)) return null;
-      if (Date.now() >= row.expires_at) throw new Error("session_expired");
-      const ecdh = crypto.createECDH("prime256v1");
-      ecdh.generateKeys();
-      privateKey = ecdh.getPrivateKey();
+      if (Date.now() >= row.expires_at && !isRetainedBrokerClaim(data)) throw new Error("session_expired");
+      // Expired broker claims need no ephemeral key: only the consumer-bound result can recover them.
+      if (Date.now() < row.expires_at) {
+        const ecdh = crypto.createECDH("prime256v1");
+        ecdh.generateKeys();
+        privateKey = ecdh.getPrivateKey();
+      }
     }
     
     
@@ -710,6 +730,11 @@ function isRecoverableSession(session) {
     && /^0x[0-9a-fA-F]{40}$/.test(session.expectedAddress || "")
     && typeof data.message.from === "string"
     && data.message.from.toLowerCase() === session.expectedAddress.toLowerCase();
+}
+
+function isRetainedBrokerClaim(session) {
+  return session.status === "pending" && !!session.brokerRequestId
+    && session.context?.kind === "mcp_connection" && !!session.context.walletId && !session.context.grantFor;
 }
 
 function durableContext(context) {

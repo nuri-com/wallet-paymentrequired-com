@@ -8,7 +8,7 @@ import { deriveAgentSignerFromSignature } from "./agent-signer-derivation.mjs";
 import { sealWithPass } from "./mcp-session.mjs";
 import { wirexLoginMessage, WIREX_LOGIN_NONCE_WINDOW_S } from "./wirex-public.mjs";
 
-export function createConnectionEffects({ onConnected = null } = {}) {
+export function createConnectionEffects({ onConnected = null, recordConnected = null } = {}) {
   return {
     // Before the persist, so what is captured here survives a restart.
     prePersist({ sessionId, session, payload, result }) {
@@ -36,6 +36,11 @@ export function createConnectionEffects({ onConnected = null } = {}) {
       if (session.context.kind !== "mcp_connection" || !wirexLogin || payload.wirexLoginSignature === undefined) return;
       const login = verifiedWirexLogin(payload, result.signer, wirexLogin);
       if (login) session.context.wirexLogin = login;
+    },
+    // Broker adoption waits for the local owner/box transaction, never the provider hand-over.
+    recordBroker({ session, payload, result, signal, deadline }) {
+      if (typeof recordConnected !== "function") throw new Error("guest_tap_recorder_required");
+      recordConnected({ ...session, result }, agentSignatureOf(session, payload), { signal, deadline });
     },
     // The service runs the guest-wallet hand-over itself, in the background (D-QUORUM A); a
     // failure is retried by the next wallet call.

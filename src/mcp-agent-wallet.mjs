@@ -356,7 +356,7 @@ export function createMcpAgentWallet({ path, env = process.env, accountFlow, cha
   const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
   function sealBox(row, owner, signature) {
     const agent = store.getAgent(`nuri-guest-${row.id}`);
-    if (!agent) return;
+    if (!agent) throw new Error('guest_agent_missing');
     const { scalar } = deriveAgentSignerFromSignature(owner, signature);
     try { db.prepare('INSERT OR REPLACE INTO agent_kernel_key_box(wallet_id,sealed) VALUES(?,?)').run(row.id, sealToPublicKey(agent.runtimePublicKey, scalar)); }
     finally { scalar.fill(0); }
@@ -391,15 +391,38 @@ export function createMcpAgentWallet({ path, env = process.env, accountFlow, cha
   // The tap is the claim (D-QUORUM A), run by the service: the first EOA that taps a link minted for
   // this wallet is recorded, then the guest key hands the Safe over. Idempotent: a failed or
   // interrupted hand-over reruns from the recorded owner on the next call; nothing is sent twice.
+  // Local record only: owner and old-key-decryptable box commit together. No quorum/provider/chain work.
+  function recordTap(walletId, tapped, signature, { strict = false, signal, deadline = Infinity } = {}) {
+    if (closed) throw new Error('wallet_unavailable');
+    signal?.throwIfAborted();
+    if (Date.now() >= deadline) throw new Error('broker_deadline');
+    const row = store.getKernelWallet(walletId);
+    if (!row || row.record.chainId !== chainId) deny();
+    if (strict && row.claimed && !same(tapped, row.ownerAddress)) throw new Error('guest_owner_already_elected');
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.prepare('INSERT OR IGNORE INTO agent_kernel_tap(wallet_id,owner_address) VALUES(?,?)').run(row.id, getAddress(tapped));
+      const address = db.prepare('SELECT owner_address FROM agent_kernel_tap WHERE wallet_id=?').get(row.id)?.owner_address;
+      if (!same(tapped, address)) {
+        if (strict) throw new Error('guest_owner_already_elected');
+      } else if (!row.claimed) {
+        if (strict) sealBox(row, address, signature);
+        else if (typeof signature === 'string') { try { sealBox(row, address, signature); } catch { /* legacy optional signature */ } }
+      }
+      signal?.throwIfAborted();
+      if (Date.now() >= deadline) throw new Error('broker_deadline');
+      db.exec('COMMIT');
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
+  }
   async function claimTapped(walletId, tapped, walletKey, signature) {
     let row = store.getKernelWallet(walletId);
     if (!row || row.record.chainId !== chainId) deny();
-    if (tapped !== undefined) db.prepare('INSERT OR IGNORE INTO agent_kernel_tap(wallet_id,owner_address) VALUES(?,?)').run(row.id, getAddress(tapped));
+    if (tapped !== undefined) recordTap(walletId, tapped, signature);
     const address = db.prepare('SELECT owner_address FROM agent_kernel_tap WHERE wallet_id=?').get(row.id)?.owner_address;
     // Custody v2: the same Privy agent EOA stays the spender; its quorum swaps the random model key for
     // the EOA-derived one. That PATCH needs the old model key, so a bare tap (onTap, no wallet_key)
     // only records the owner and seals the derived key; the agent's next call with wallet_key finishes.
-    if (typeof signature === 'string' && address && tapped !== undefined && same(tapped, address)) { try { sealBox(row, address, signature); } catch { /* a bad signature seals nothing */ } }
+
     if (row.claimed) {
       // Claimed on chain but the new key was never handed out (crash between): hand it out now.
       const scalar = openBox(row.id, walletKey);
@@ -628,7 +651,7 @@ export function createMcpAgentWallet({ path, env = process.env, accountFlow, cha
     }
     return { wallet: walletView(load(target.id)), wallet_key: key };
   }
-  return { tool, call, onTap, rekey, payFee, newest, close() {
+  return { tool, call, onTap, recordTap, rekey, payFee, newest, close() {
     if (closed) return;
     closed = true;
     try { for (const rt of new Set([runtime, ...runtimes.values()])) rt.close(); } finally { try { db.close(); } finally { store.close(); } }

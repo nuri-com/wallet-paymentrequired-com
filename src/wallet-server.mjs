@@ -66,7 +66,8 @@ const browserSessionStore = createBrowserSessionStore({ path: STATE_DB_PATH });
 process.once("exit", () => browserSessionStore?.close());
 // A connect tap on a guest Safe's link is the claim; the wallet tool runs it (source server.mjs:106-111).
 const browserBridge = createBrowserBridge({ publicOrigin: PUBLIC_ORIGIN, sessionStore: browserSessionStore,
-  effects: createConnectionEffects({ onConnected: (session, signature) => walletLocal ? walletLocal.onTap(session, signature) : null }) });
+  effects: createConnectionEffects({ onConnected: (session, signature) => walletLocal ? walletLocal.onTap(session, signature) : null,
+    recordConnected: (session, signature, options) => walletLocal.recordTap(session, signature, options) }) });
 
 const privyConnectionSigner = createPrivyConnectionSigner();
 const signerClient = createSignerClient({ bridge: browserBridge, connectionSigner: privyConnectionSigner });
@@ -99,10 +100,13 @@ const WIREX_READS = ["getUserV2", "getWallet", "listWallets", "createGlobalWalle
 const walletWirex = bankingHelper ? Object.fromEntries(WIREX_READS.map((method) => [method, (owner, ...rest) =>
   bankingHelper.call({ op: "wirex_read", method, owner, rest, session: walletCallContext.getStore() ?? null })])) : null;
 
+// Root signer broker consumer "wallet" (source server.mjs:247-248); unset ROOT_SIGNER_URL = local taps only.
+const rootSignerHook = await createRootSignerHook({ bridge: browserBridge, config: readRootSignerConfig(process.env, { consumerId: "wallet" }) });
 // The wallet tool (source server.mjs:203-206; walletPay=null there: bank-root pay is banking's).
 // consolidate=false: the split wallet never sends from older wallets (src/mcp-wallet-tool.mjs:207).
 const walletLocal = createMcpWalletTool({ accountFlow: mcpAccount, chainId: aaConfig.chainId, path: STATE_DB_PATH, wirexBaas: walletWirex, bridge: signerClient, walletPay: null, spendPolicy,
-  publicBase: browserBridge.publicBase, bank: bankTool, services: JSON.parse(SERVICES_JSON), safeLimits: spendPolicy, consolidate: false });
+  publicBase: browserBridge.publicBase, bank: bankTool, services: JSON.parse(SERVICES_JSON), safeLimits: spendPolicy, consolidate: false,
+  broker: rootSignerHook }); // guest claim links register with the signer like connect links (src/mcp-wallet-tool.mjs connectLink)
 const walletTool = { ...walletLocal, call: (args, ctx) => walletCallContext.run(typeof args?.session === "string" ? args.session : null, () => walletLocal.call(args, ctx)) };
 process.once("exit", () => { walletTool?.close?.(); bankTool?.close?.(); });
 
@@ -111,8 +115,6 @@ const toolCharges = createToolCharges({ env: process.env, path: STATE_DB_PATH, c
 process.once("exit", () => toolCharges.close());
 if (toolCharges.enabled) console.log(`tool prices: ${toolCharges.prices.size} priced entr${toolCharges.prices.size === 1 ? "y" : "ies"}, paid to ${toolCharges.payTo}`);
 
-// Root signer broker consumer "wallet" (source server.mjs:247-248); unset ROOT_SIGNER_URL = local taps only.
-const rootSignerHook = await createRootSignerHook({ bridge: browserBridge, config: readRootSignerConfig(process.env, { consumerId: "wallet" }) });
 // The wallet's own loopback /mcp lists the wallet tool; account and bank are served by banking.
 const mcpConnection = createMcpConnection({ bridge: signerClient, accountFlow: mcpAccount, wallet: walletTool, chainId: aaConfig.chainId, wirexBaas: null, charges: toolCharges,
   broker: rootSignerHook, connectAdvance: false, identity: identityHandoff });
