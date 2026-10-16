@@ -115,9 +115,9 @@ export async function createRootSignerHook({ bridge, config, wirexLogin = null, 
   }
 
   // No adoption or ACK until every candidate was read. A missing/unreadable submitted
-  // result may precede the apparent winner: fail closed, never skip it. Broker approvedAt
-  // is its frozen submit timestamp, NOT link creation time or a browser-supplied timestamp.
-  // Equal milliseconds have no ordering in the current contract: refuse an arbitrary owner.
+  // result may precede the apparent winner: fail closed, never skip it. Broker submitOrder
+  // is persisted atomically with ciphertext, independent of wall-clock ties/regressions.
+  // Historical results without that order remain unresolved; approvedAt is only for expiry.
   const claimReads = new Map();
   function hydrateClaims(walletId) {
     if (claimReads.has(walletId)) return claimReads.get(walletId);
@@ -144,15 +144,17 @@ export async function createRootSignerHook({ bridge, config, wirexLogin = null, 
           if (["pending", "expired", "cancelled"].includes(status.status)) continue;
           if (status.status !== "submitted") throw new Error("broker_claim_status_unresolved");
           const result = await client.readResult(session.brokerRequestId);
-          if (result.requestId !== session.brokerRequestId || result.digest !== status.resultDigest)
+          if (result.requestId !== session.brokerRequestId || result.digest !== status.resultDigest || result.submitOrder !== status.submitOrder)
             throw new Error("broker_claim_result_mismatch");
-          if (!Number.isSafeInteger(result.approvedAt) || result.approvedAt < 0 || result.approvedAt > Date.now())
+          if (!Number.isSafeInteger(result.approvedAt) || result.approvedAt < 0)
             throw new Error("broker_approved_at_invalid");
+          if (!Number.isSafeInteger(result.submitOrder) || result.submitOrder < 1)
+            throw new Error("broker_claim_order_unknown");
           delivered.add(id);
-          if (!first || result.approvedAt < first.result.approvedAt) {
+          if (!first || result.submitOrder < first.result.submitOrder) {
             first = { id, session, result };
             tied = false;
-          } else if (result.approvedAt === first.result.approvedAt) tied = true;
+          } else if (result.submitOrder === first.result.submitOrder) tied = true;
         }
         if (!first) return null;
       }

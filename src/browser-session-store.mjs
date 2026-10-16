@@ -48,13 +48,18 @@ export function createBrowserSessionStore({ path } = {}) {
   `);
   const byId = db.prepare("SELECT * FROM connection_sessions WHERE session_id = ?");
   const drop = db.prepare("DELETE FROM connection_sessions WHERE session_id = ?");
-  const dropExpired = db.prepare("DELETE FROM connection_sessions WHERE expires_at <= ?");
-  // Read-only: ALL pending, unexpired, broker-bound claim links of this guest wallet.
-  // Row order is discovery only; ownership is selected by broker submission time in the hook.
+  // Pending broker guest claims may hold a timely result even after local approval expiry.
+  // Retain descriptors/hashes only, never a per-session private key or plaintext secret.
+  const retainedClaim = `CASE WHEN json_valid(data) THEN
+    json_extract(data, '$.status') = 'pending' AND json_extract(data, '$.brokerRequestId') IS NOT NULL
+    AND json_extract(data, '$.context.kind') = 'mcp_connection' AND json_extract(data, '$.context.walletId') IS NOT NULL
+    AND json_extract(data, '$.context.grantFor') IS NULL ELSE 0 END`;
+  const dropExpired = db.prepare(`DELETE FROM connection_sessions WHERE expires_at <= ? AND NOT COALESCE((${retainedClaim}), 0)`);
+  // Row order is discovery only; ownership is selected by broker submitOrder in the hook.
   const brokerClaims = db.prepare(`
     SELECT session_id FROM (
       SELECT session_id, rowid AS r, expires_at, CASE WHEN json_valid(data) THEN data END AS d FROM connection_sessions)
-    WHERE expires_at > ? AND json_extract(d, '$.status') = 'pending' AND json_extract(d, '$.brokerRequestId') IS NOT NULL
+    WHERE json_extract(d, '$.status') = 'pending' AND json_extract(d, '$.brokerRequestId') IS NOT NULL
       AND json_extract(d, '$.context.kind') = 'mcp_connection' AND json_extract(d, '$.context.walletId') = ?
       AND json_extract(d, '$.context.grantFor') IS NULL
     ORDER BY r
@@ -64,8 +69,8 @@ export function createBrowserSessionStore({ path } = {}) {
     save({ sessionId, tokenSha256 = null, account = null, signerKind = null, connectedAt = null, expiresAt, data }) {
       upsert.run(sessionId, tokenSha256, account, signerKind, connectedAt, expiresAt, data);
     },
-    brokerClaims(walletId, now = Date.now()) {
-      return brokerClaims.all(now, String(walletId)).map((row) => row.session_id);
+    brokerClaims(walletId) {
+      return brokerClaims.all(String(walletId)).map((row) => row.session_id);
     },
     load(sessionId) {
       return byId.get(sessionId) ?? null;

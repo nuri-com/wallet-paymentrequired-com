@@ -285,7 +285,8 @@ export function createMcpConnection({ bridge, accountFlow, wallet, account, bank
         if (broker) {
           let link = null;
           try { link = bridge.requireSession(args.session.split(".")[0]); } catch { link = null; }
-          if (link?.status === "pending" && link.brokerRequestId && link.context?.kind === "mcp_connection" && !link.context.grantFor && Date.now() < link.expiresAt)
+          if (link?.status === "pending" && link.brokerRequestId && link.context?.kind === "mcp_connection" && !link.context.grantFor
+            && (Date.now() < link.expiresAt || link.context.walletId))
             await broker.hydrate(args.session.split(".")[0]).catch((error) => logEvent("warn", "root_signer_hydrate_failed", { error: String(error?.message || error).slice(0, 80) }));
         }
         if (name === "bank" || name === "account") { const grant = await bankGrant(args.session, { signal }); if (grant) return { content: [{ type: "text", text: JSON.stringify(grant) }], structuredContent: grant, isError: false }; }
@@ -342,7 +343,8 @@ export function createMcpConnection({ bridge, accountFlow, wallet, account, bank
     // this MCP boundary. The sync createSession above already persisted the row, so nothing here
     // is a Promise-as-session. Legacy (pre-broker) pending rows have no brokerRequestId and keep
     // the original callback path untouched.
-    if (broker && session.status === "pending" && Date.now() < session.expiresAt) {
+    if (broker && session.status === "pending"
+      && (Date.now() < session.expiresAt || (session.brokerRequestId && session.context.walletId))) {
       if (!session.brokerRequestId && !Object.hasOwn(args, "request_id")) await broker.register(id);
       else if (session.brokerRequestId) await broker.hydrate(id).catch((error) => logEvent("warn", "root_signer_hydrate_failed", { error: String(error?.message || error).slice(0, 80) }));
     }

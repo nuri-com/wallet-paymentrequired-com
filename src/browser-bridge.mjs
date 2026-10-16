@@ -661,10 +661,13 @@ class BrowserBridge {
     let privateKey = null;
     if (data.status === "pending") {
       if (data.recoveryVersion !== 1 || !validRecoveryLink(data, sessionId, row.expires_at)) return null;
-      if (Date.now() >= row.expires_at) throw new Error("session_expired");
-      const ecdh = crypto.createECDH("prime256v1");
-      ecdh.generateKeys();
-      privateKey = ecdh.getPrivateKey();
+      if (Date.now() >= row.expires_at && !isRetainedBrokerClaim(data)) throw new Error("session_expired");
+      // Expired broker claims need no ephemeral key: only the consumer-bound result can recover them.
+      if (Date.now() < row.expires_at) {
+        const ecdh = crypto.createECDH("prime256v1");
+        ecdh.generateKeys();
+        privateKey = ecdh.getPrivateKey();
+      }
     }
     
     
@@ -710,6 +713,11 @@ function isRecoverableSession(session) {
     && /^0x[0-9a-fA-F]{40}$/.test(session.expectedAddress || "")
     && typeof data.message.from === "string"
     && data.message.from.toLowerCase() === session.expectedAddress.toLowerCase();
+}
+
+function isRetainedBrokerClaim(session) {
+  return session.status === "pending" && !!session.brokerRequestId
+    && session.context?.kind === "mcp_connection" && !!session.context.walletId && !session.context.grantFor;
 }
 
 function durableContext(context) {

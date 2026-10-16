@@ -60,13 +60,13 @@ export function createRootSignerClient({ baseUrl, consumerId, credential, fetchI
       return { requestId, approvalUrl, status, expiresAt };
     },
     async readStatus(requestId) {
-      const { requestId: id, status, expiresAt, resultDigest } = await call("GET", `/v1/requests/${encodeURIComponent(readId(requestId))}`);
-      return { requestId: id, status, expiresAt, ...(resultDigest ? { resultDigest } : {}) };
+      const { requestId: id, status, expiresAt, resultDigest, submitOrder } = await call("GET", `/v1/requests/${encodeURIComponent(readId(requestId))}`);
+      return { requestId: id, status, expiresAt, ...(resultDigest ? { resultDigest, submitOrder } : {}) };
     },
     async readResult(requestId) {
-      const { requestId: id, consumerId: owner, envelope, digest, approvedAt, retainUntil } = await call("GET", `/v1/requests/${encodeURIComponent(readId(requestId))}/result`);
+      const { requestId: id, consumerId: owner, envelope, digest, approvedAt, retainUntil, submitOrder } = await call("GET", `/v1/requests/${encodeURIComponent(readId(requestId))}/result`);
       if (owner !== consumerId) throw codeError("wrong_consumer", "result_consumer_mismatch", 403);
-      return { requestId: id, consumerId: owner, envelope, digest, approvedAt, retainUntil };
+      return { requestId: id, consumerId: owner, envelope, digest, approvedAt, retainUntil, submitOrder };
     },
     async acknowledge(requestId, { digest, accepted } = {}) {
       if (accepted !== true || typeof digest !== "string" || !/^[0-9a-f]{64}$/.test(digest)) throw codeError("invalid_request", "ack_invalid");
