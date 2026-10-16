@@ -5,6 +5,22 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Retained broker claim ordering/recovery, 2026-10-16 (source Emin; implementer Hermes/GPT-6.1; unreleased, not deployed)
+
+- Code `e06df06c12e0d5e35b4631ca9866fdfb65c63ee8`, committed 2026-10-16T03:33:17+02:00.
+  Supersedes timestamp election below: authenticated status/result `submitOrder` must match and be a positive safe
+  integer; the least order wins after both scans. Unknown historical order, duplicate earliest order or unreadable
+  candidates fail closed, without ACK (`src/signer-broker-hook.mjs:117-168`, `src/root-signer-client.mjs:62-70`).
+- Retain pending broker guest-claim descriptors after local expiry; reload without an expired ephemeral key and allow
+  hydration from session/request_id paths (`src/browser-session-store.mjs:51-73`, `src/browser-bridge.mjs:662-670,718-721`,
+  `src/mcp-connection.mjs:285-290,346-350`). Existing wallet_key discovery uses the same election.
+- `approvedAt` still gates original approval/signing expiry; envelope bindings, signatures, persist-before-ACK and
+  effects remain in the existing adoption pipeline (`src/browser-bridge.mjs:484-530`, `src/signer-broker-hook.mjs:104-114`).
+- Requires coordinated Signer code `19f2c459f83d2a84d4d25c191c630ab579ca967d`: additive internal submit counter/column,
+  response metadata and wallet-connect ciphertext retention until ACK. No public MCP input schema/version change.
+  Historical unknown order and already-purged data remain unresolved; full parity, cloud checks/build/runtime/deploy
+  UNVERIFIED. No product execution on Mac. Parent owns execution and release.
+
 ## Wallet parity v3, code b986f09a8a43a669140cf8c6c61618a65c78b4bb, 2026-10-16 (source Emin; implementer Hermes/Opus 5.5; unreleased, not deployed)
 
 - Supersedes the creation-order/newest-32 behavior described below. Discover all pending unexpired broker claim rows,

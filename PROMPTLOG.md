@@ -5,6 +5,13 @@ flowchart LR
   O[Emin: physically separate repos] --> H[Hermes subagent: wallet staging]
 ```
 
+- 2026-10-16, source Emin via Hermes parent; implementer Hermes/GPT-6.1 (Opus route exhausted): resolve timestamp ties/
+  clock regression, five-minute ciphertext loss versus guest links, and local expiry recovery; coordinate owned Wallet
+  and Signer endpoints, preserve approvedAt expiry/bindings/signatures/guest-key handover, historical ties fail closed.
+  Source-only; no Mac product execution, new tests/dependencies, Banking edits, push or deploy. Code
+  `e06df06c12e0d5e35b4631ca9866fdfb65c63ee8` (2026-10-16T03:33:17+02:00): persisted broker-order election and expired
+  guest descriptor recovery (`src/signer-broker-hook.mjs:117-168`, `src/browser-session-store.mjs:51-73`,
+  `src/browser-bridge.mjs:662-670,718-721`, `src/mcp-connection.mjs:285-290,346-350`). Cloud/runtime/full parity UNVERIFIED.
 - 2026-10-16, source Emin via Hermes parent; implementer Hermes/Opus 5.5; Wallet parity v3,
   code b986f09a8a43a669140cf8c6c61618a65c78b4bb: "No arbitrary newest-32 window; earliest successful tap, not oldest
   link creation; verify broker approvedAt; bounded broker response latency and stop repeated outage calls; do not hide
