@@ -44,7 +44,8 @@ export async function createRootSignerHook({ bridge, config, wirexLogin = null, 
   // Extras (C0 §2): wallet asks for the agent derivation signature only; banking asks for the
   // Privy access token and, when the root is pinned (expectedAddress), the pre-rendered Wirex
   // login message whose nonce is stored on the session (R2 D2).
-  async function register(sessionId) {
+  async function register(sessionId, options = {}) {
+    checkBudget(options);
     const session = bridge.requireSession(sessionId);
     if (session.status !== "pending") throw new Error("session_already_used");
     if (session.brokerRequestId) return { requestId: session.brokerRequestId, approvalUrl: session.approvalUrl, status: "pending" };
@@ -74,7 +75,7 @@ export async function createRootSignerHook({ bridge, config, wirexLogin = null, 
       requestId: sessionId, state: session.state, expiresAt, intent: session.intent, privyAppId: ROOT_PRIVY_APP_ID,
       ...(session.expectedAddress ? { expectedAddress: session.expectedAddress } : {}),
       approval, ...(config.returnOrigin ? { returnOrigin: config.returnOrigin } : {}),
-    });
+    }, options);
     bridge.bindBrokerRequest(sessionId, { requestId: created.requestId, extras: extraRequests.map((e) => e.id), approvalUrl: created.approvalUrl, expiresAt });
     logEvent("info", "root_signer_registered", { consumer: consumerId, status: created.status });
     return created;
@@ -84,32 +85,42 @@ export async function createRootSignerHook({ bridge, config, wirexLogin = null, 
   // only after the bridge persisted the approved row (C0 §2 retention/ACK rule). Same-digest
   // replay after a restart re-adopts without re-executing any effect that already landed
   // (bridge answers replay:true) and repeats the identical ACK.
-  async function hydrate(sessionId) {
+  function budget({ signal, deadline = Date.now() + 3_000 } = {}) {
+    return { signal, deadline: Math.min(deadline, Date.now() + 25_000) };
+  }
+  function checkBudget({ signal, deadline = Infinity }) {
+    signal?.throwIfAborted();
+    if (Date.now() >= deadline) throw new Error("broker_deadline");
+  }
+  async function hydrate(sessionId, options = {}) {
+    options = budget(options);
     const session = bridge.requireSession(sessionId);
     if (!session.brokerRequestId) return null;
+    // Even approved rows must recover their local owner/box before any ACK.
+    if (consumerId === "wallet" && session.context?.kind === "mcp_connection" && session.context.walletId && !session.context.grantFor)
+      return hydrateClaims(session.context.walletId, options);
+    checkBudget(options);
     if (session.status === "approved" && session.brokerDigest) {
-      await client.acknowledge(session.brokerRequestId, { digest: session.brokerDigest, accepted: true }).catch(() => null);
+      await client.acknowledge(session.brokerRequestId, { digest: session.brokerDigest, accepted: true }, options).catch(() => null);
       return { status: "consumed" };
     }
-    // Every guest-link entry point (session, request_id, wallet_key) uses the same
-    // wallet-wide election; targeting a later link must not bypass an earlier tap.
-    if (consumerId === "wallet" && session.context?.kind === "mcp_connection" && session.context.walletId && !session.context.grantFor)
-      return hydrateClaims(session.context.walletId);
-    const status = await client.readStatus(session.brokerRequestId);
+    const status = await client.readStatus(session.brokerRequestId, options);
     if (status.status !== "submitted") return status;
-    const result = await client.readResult(session.brokerRequestId);
-    return adopt(sessionId, session, result);
+    const result = await client.readResult(session.brokerRequestId, options);
+    return adopt(sessionId, session, result, options);
   }
 
-  async function adopt(sessionId, session, result) {
+  async function adopt(sessionId, session, result, options) {
     // Open with B1's own codec (src/root-signer-envelope.mjs decryptRootSignerEnvelope) and check the
     // broker bindings with B1's assertRootSignerPayload; the bridge then re-verifies the signature
     // and persists exactly as it does for a local tap.
     const open = (envelope, state) => assertRootSignerPayload(decryptRootSignerEnvelope(envelope, { privateKey: config.privateKeyB64, state }),
       { requestId: session.brokerRequestId, consumerId, state: session.state, intent: session.intent, privyAppId: ROOT_PRIVY_APP_ID, expiresAt: session.brokerExpiresAt,
         ...(session.expectedAddress ? { expectedAddress: session.expectedAddress } : {}) });
-    const adopted = await bridge.acceptBrokerResult(sessionId, { envelope: result.envelope, digest: result.digest, approvedAt: result.approvedAt }, { open, consumerId });
-    await client.acknowledge(session.brokerRequestId, { digest: result.digest, accepted: true });
+    checkBudget(options);
+    const adopted = await bridge.acceptBrokerResult(sessionId, { envelope: result.envelope, digest: result.digest, approvedAt: result.approvedAt, submitOrder: result.submitOrder }, { open, consumerId, ...options });
+    checkBudget(options);
+    await client.acknowledge(session.brokerRequestId, { digest: result.digest, accepted: true }, options);
     logEvent("info", "root_signer_adopted", { consumer: consumerId, replay: adopted.replay === true });
     return { status: "consumed" };
   }
@@ -118,15 +129,12 @@ export async function createRootSignerHook({ bridge, config, wirexLogin = null, 
   // result may precede the apparent winner: fail closed, never skip it. Broker submitOrder
   // is persisted atomically with ciphertext, independent of wall-clock ties/regressions.
   // Historical results without that order remain unresolved; approvedAt is only for expiry.
-  const claimReads = new Map();
-  function hydrateClaims(walletId) {
-    if (claimReads.has(walletId)) return claimReads.get(walletId);
-    const reading = readClaims(walletId).finally(() => claimReads.delete(walletId));
-    claimReads.set(walletId, reading);
-    return reading;
+  function hydrateClaims(walletId, options = {}) {
+    // Independent budgets: a cancelled caller never borrows or leaves an unbounded scan.
+    return readClaims(walletId, budget(options));
   }
 
-  async function readClaims(walletId) {
+  async function readClaims(walletId, options) {
     try {
       let first = null, tied = false;
       const delivered = new Set(), candidates = new Set();
@@ -134,20 +142,29 @@ export async function createRootSignerHook({ bridge, config, wirexLogin = null, 
       // BEFORE that candidate. Re-snapshot and re-read unresolved links after a
       // candidate is known; new links minted during the first pass are included too.
       for (let pass = 0; pass < 2; pass++) {
+        checkBudget(options);
         for (const id of bridge.sessionStore?.brokerClaims?.(walletId) ?? []) candidates.add(id);
         for (const id of candidates) {
+          checkBudget(options);
           if (delivered.has(id)) continue; // submitted ciphertext/timestamp are immutable
           const session = bridge.requireSession(id);
-          if (session.status === "approved") return { status: "consumed" };
-          const status = await client.readStatus(session.brokerRequestId);
-          if (status.requestId !== session.brokerRequestId) throw new Error("broker_claim_request_mismatch");
-          if (["pending", "expired", "cancelled"].includes(status.status)) continue;
-          if (status.status !== "submitted") throw new Error("broker_claim_status_unresolved");
-          const result = await client.readResult(session.brokerRequestId);
-          if (result.requestId !== session.brokerRequestId || result.digest !== status.resultDigest || result.submitOrder !== status.submitOrder)
-            throw new Error("broker_claim_result_mismatch");
-          if (!Number.isSafeInteger(result.approvedAt) || result.approvedAt < 0)
-            throw new Error("broker_approved_at_invalid");
+          let result;
+          if (session.status === "approved" && session.brokerApplied === true) {
+            // ACK may have cleared ciphertext; the durable winner still participates in election.
+            result = { digest: session.brokerDigest, submitOrder: session.brokerSubmitOrder };
+            if (!/^[0-9a-f]{64}$/.test(result.digest ?? "")) throw new Error("broker_claim_result_mismatch");
+          } else {
+            const status = await client.readStatus(session.brokerRequestId, options);
+            if (status.requestId !== session.brokerRequestId) throw new Error("broker_claim_request_mismatch");
+            if (session.status !== "approved" && ["pending", "expired", "cancelled"].includes(status.status)) continue;
+            if (status.status !== "submitted") throw new Error("broker_claim_status_unresolved");
+            result = await client.readResult(session.brokerRequestId, options);
+            if (result.requestId !== session.brokerRequestId || result.digest !== status.resultDigest || result.submitOrder !== status.submitOrder)
+              throw new Error("broker_claim_result_mismatch");
+            if (!Number.isSafeInteger(result.approvedAt) || result.approvedAt < 0)
+              throw new Error("broker_approved_at_invalid");
+            if (session.status === "approved" && session.brokerDigest !== result.digest) throw new Error("broker_claim_result_mismatch");
+          }
           if (!Number.isSafeInteger(result.submitOrder) || result.submitOrder < 1)
             throw new Error("broker_claim_order_unknown");
           delivered.add(id);
@@ -156,12 +173,14 @@ export async function createRootSignerHook({ bridge, config, wirexLogin = null, 
             tied = false;
           } else if (result.submitOrder === first.result.submitOrder) tied = true;
         }
+        checkBudget(options);
         if (!first) return null;
       }
       if (tied) throw new Error("broker_claim_order_ambiguous");
       // The existing bridge still owns ALL digest, decryption, binding, signature,
       // expiry and replay checks; no fallback to a later result if these reject.
-      return first ? await adopt(first.id, first.session, first.result) : null;
+      checkBudget(options);
+      return first ? await adopt(first.id, first.session, first.result, options) : null;
     } catch (error) {
       logEvent("warn", "root_signer_hydrate_failed", { error: String(error?.message || error).slice(0, 80) });
       return { status: "pending" };

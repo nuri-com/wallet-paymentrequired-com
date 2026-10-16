@@ -66,7 +66,8 @@ const browserSessionStore = createBrowserSessionStore({ path: STATE_DB_PATH });
 process.once("exit", () => browserSessionStore?.close());
 // A connect tap on a guest Safe's link is the claim; the wallet tool runs it (source server.mjs:106-111).
 const browserBridge = createBrowserBridge({ publicOrigin: PUBLIC_ORIGIN, sessionStore: browserSessionStore,
-  effects: createConnectionEffects({ onConnected: (session, signature) => walletLocal ? walletLocal.onTap(session, signature) : null }) });
+  effects: createConnectionEffects({ onConnected: (session, signature) => walletLocal ? walletLocal.onTap(session, signature) : null,
+    recordConnected: (session, signature, options) => walletLocal.recordTap(session, signature, options) }) });
 
 const privyConnectionSigner = createPrivyConnectionSigner();
 const signerClient = createSignerClient({ bridge: browserBridge, connectionSigner: privyConnectionSigner });

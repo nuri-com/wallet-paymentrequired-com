@@ -298,7 +298,7 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
   // sentence alone still names the next step.
   // claim links are found again from their stored rows (context.walletId), so a restart or a newer
   // link never loses an earlier tap (broker.hydrateClaims, src/signer-broker-hook.mjs).
-  async function connectLink(walletId, { signal } = {}) {
+  async function connectLink(walletId, { signal, deadline } = {}) {
     try {
       if (!bridge || typeof bridge.createSession !== "function") return null;
       const minted = await mintConnectApproval(bridge, { walletId });
@@ -306,7 +306,7 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
       // Root signer broker: the same registration connect_wallet does (src/mcp-connection.mjs:338), so this
       // link opens the signer too; the tap comes back through broker hydrate. No broker = the local link.
       // Broker down: no link at all (never the local one: another Privy app, another page); logged, the read still answers.
-      const url = broker ? (await broker.register(minted.request_id).catch((error) => { logEvent("warn", "root_signer_register_failed", { code: error?.code ?? null }); return null; }))?.approvalUrl : minted?.approval_url;
+      const url = broker ? (await broker.register(minted.request_id, { signal, deadline }).catch((error) => { logEvent("warn", "root_signer_register_failed", { code: error?.code ?? null }); return null; }))?.approvalUrl : minted?.approval_url;
       if (typeof url !== "string") return null;
       return { ...minted, approval_url: url };
     } catch { return null; }
@@ -469,12 +469,15 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
     return claimed?.error === "claim_not_tapped" ? null : claimed;
   }
 
-  async function balance(args, { signal } = {}) {
+  async function balance(args, { signal, deadline } = {}) {
     if (args.new === "true") args = { ...args, new: true }; if (args.wallet_key === undefined && !args.session && args.new !== true) return await askFirst(); const fk = typeof args.session === "string" && args.session ? args.session.split(".")[0] : null, open = fk ? openFunds.get(fk) : null; if (open && Date.now() - open.at < 30 * 60_000) await fund({ ...args, action: "fund", amount: open.amount, ...(open.request_id ? { request_id: open.request_id } : {}) }, { signal }).catch(() => null); else if (open) openFunds.delete(fk); const wallet = await resolveWallet(args, { signal }); const merged = await mergeIntoFirst({ agentWallet, opRequestId, unitsToDecimal, unconfirmed: UNCONFIRMED }, args, consolidate ? wallet : { ...wallet, token: undefined }, { signal }); // models also send new as the text "true" (live 2026-09-28); without a token mergeIntoFirst only selects the newest usable wallet, never sends (split role)
     if (merged?.first) Object.assign(wallet, merged.first);
-    // Tapped on the signer: adopt every delivered claim result first (bridge effects run onTap). wallet_key was
+    // Tapped on the signer: record the elected owner/box first, without running the hand-over. wallet_key was
     // already checked by resolveWallet above; a fresh guest wallet has no link yet.
-    if (broker && !wallet.claimed && !wallet.created && typeof wallet.token === "string") await broker.hydrateClaims(wallet.id);
+    if (broker && !wallet.claimed && !wallet.created && typeof wallet.token === "string") {
+      const hydration = await broker.hydrateClaims(wallet.id, { signal, deadline });
+      if (hydration?.status === "pending") return { ok: true, status: "pending", address: wallet.address, next: NEXT_CONNECTING };
+    }
     const claim = await finishTap(wallet, { signal });
     if (claim?.status === "claimed") { wallet.claimed = true; wallet.owner = claim.wallet?.owner_address; }
     // The hand-over replaced the access: from here on only the new key opens this wallet.
@@ -499,7 +502,7 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
     // names the one thing that keeps it. With money in it that is the connect
     // link itself — the backup (D-NEXT-SENTENCE).
     if (!wallet.claimed && reserve === null && (wallet.created || !(await hasOwnerSession(args.session, { signal })))) {
-      const link = await connectLink(wallet.id, { signal });
+      const link = await connectLink(wallet.id, { signal, deadline });
       if (link) { answer.approval_url = link.approval_url; answer.request_id = link.request_id; if (typeof link.session === "string") answer.session = link.session; }
       answer.next = wallet.created ? KEY_SENTENCE : NEXT_CLAIM;
       if (!link && broker) answer.next = "Wallet ready: show address and balance. Claim link: same call in a moment."; // broker down: no link to name
@@ -826,7 +829,7 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
     return { ok: true, status: "done", history, next: "History shown." };
   }
 
-  async function call(args, { signal } = {}) {
+  async function call(args, { signal, deadline } = {}) {
     signal?.throwIfAborted();
     const allowed = ["action", "wallet_key", "session", "url", "to", "amount", "max_amount", "method", "body", "request_id", "chain", "query", "limit", "new"];
     if (!args || typeof args !== "object" || Array.isArray(args) || Object.keys(args).some(key => !allowed.includes(key))) {
@@ -837,7 +840,7 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
     }
     try {
       switch (args.action) {
-        case "balance": return await balance(args, { signal });
+        case "balance": return await balance(args, { signal, deadline });
         case "fund": return await fund(args, { signal });
         case "pay": return await pay(args, { signal });
         case "send": return await send(args, { signal });
@@ -857,6 +860,11 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
     const walletId = session?.context?.walletId, owner = session?.result?.signer;
     if (typeof walletId !== "string" || typeof owner !== "string") return null;
     try { return await agentWallet().onTap(walletId, owner, signature); } catch { return null; }
+  }
+  function recordTap(session, signature, options = {}) {
+    const walletId = session?.context?.walletId, owner = session?.result?.signer;
+    if (typeof walletId !== "string" || typeof owner !== "string") throw new Error("guest_tap_unbound");
+    return agentWallet().recordTap(walletId, owner, signature, { ...options, strict: true });
   }
 
   // D-TOOLS-PAID: the payer hook of src/tool-prices.mjs. The caller's Safe pays `amountUnits` USDC to
@@ -901,7 +909,7 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
     return typeof wallet?.address === "string" ? wallet.address : null;
   }
 
-  return { tool: WALLET_TOOL, call, onTap, payFee, safeAddressFor, close() {
+  return { tool: WALLET_TOOL, call, onTap, recordTap, payFee, safeAddressFor, close() {
     if (closed) return;
     closed = true;
     try { inner?.close(); } finally { inner = null; }

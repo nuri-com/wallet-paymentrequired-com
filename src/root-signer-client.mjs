@@ -14,15 +14,19 @@ export function createRootSignerClient({ baseUrl, consumerId, credential, fetchI
   // One deadline covers headers AND body. A failed call opens a shared short circuit,
   // including registration after hydration, so an outage is not retried for every link.
   let retryAt = 0;
-  async function call(method, path, body) {
+  async function call(method, path, body, { signal, deadline = Infinity } = {}) {
+    signal?.throwIfAborted();
+    if (Date.now() >= deadline) throw codeError("broker_deadline", "broker_deadline", 503);
     if (Date.now() < retryAt) throw codeError("broker_backoff", "broker_retry_later", 503);
     const controller = new AbortController();
-    let timer;
+    let timer, onAbort;
     const timeout = new Promise((_, reject) => {
+      onAbort = () => { controller.abort(); reject(signal.reason ?? codeError("broker_cancelled", "broker_cancelled", 503)); };
+      signal?.addEventListener("abort", onAbort, { once: true });
       timer = setTimeout(() => {
         controller.abort();
         reject(codeError("broker_unreachable", "broker_timeout", 503));
-      }, 3_000);
+      }, Math.min(3_000, Math.max(0, deadline - Date.now())));
     });
     try {
       return await Promise.race([timeout, (async () => {
@@ -43,38 +47,39 @@ export function createRootSignerClient({ baseUrl, consumerId, credential, fetchI
         return json;
       })()]);
     } catch (error) {
-      retryAt = Date.now() + 5_000;
+      if (!signal?.aborted && Date.now() < deadline) retryAt = Date.now() + 5_000;
       throw error;
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
     }
   }
 
   return {
     consumerId,
     // input: {requestId?, state?, expiresAt, expectedAddress?, privyAppId, intent, approval, returnOrigin?}
-    async createRequest(input) {
+    async createRequest(input, options) {
       if (!input || typeof input !== "object") throw codeError("invalid_request", "input_invalid");
       if (input.privyAppId !== ROOT_PRIVY_APP_ID) throw codeError("invalid_request", "privyAppId_not_root");
-      const { requestId, approvalUrl, status, expiresAt } = await call("POST", "/v1/requests", { ...input, consumerId });
+      const { requestId, approvalUrl, status, expiresAt } = await call("POST", "/v1/requests", { ...input, consumerId }, options);
       return { requestId, approvalUrl, status, expiresAt };
     },
-    async readStatus(requestId) {
-      const { requestId: id, status, expiresAt, resultDigest, submitOrder } = await call("GET", `/v1/requests/${encodeURIComponent(readId(requestId))}`);
+    async readStatus(requestId, options) {
+      const { requestId: id, status, expiresAt, resultDigest, submitOrder } = await call("GET", `/v1/requests/${encodeURIComponent(readId(requestId))}`, undefined, options);
       return { requestId: id, status, expiresAt, ...(resultDigest ? { resultDigest, submitOrder } : {}) };
     },
-    async readResult(requestId) {
-      const { requestId: id, consumerId: owner, envelope, digest, approvedAt, retainUntil, submitOrder } = await call("GET", `/v1/requests/${encodeURIComponent(readId(requestId))}/result`);
+    async readResult(requestId, options) {
+      const { requestId: id, consumerId: owner, envelope, digest, approvedAt, retainUntil, submitOrder } = await call("GET", `/v1/requests/${encodeURIComponent(readId(requestId))}/result`, undefined, options);
       if (owner !== consumerId) throw codeError("wrong_consumer", "result_consumer_mismatch", 403);
       return { requestId: id, consumerId: owner, envelope, digest, approvedAt, retainUntil, submitOrder };
     },
-    async acknowledge(requestId, { digest, accepted } = {}) {
+    async acknowledge(requestId, { digest, accepted } = {}, options) {
       if (accepted !== true || typeof digest !== "string" || !/^[0-9a-f]{64}$/.test(digest)) throw codeError("invalid_request", "ack_invalid");
-      const { status } = await call("POST", `/v1/requests/${encodeURIComponent(readId(requestId))}/ack`, { digest, accepted: true });
+      const { status } = await call("POST", `/v1/requests/${encodeURIComponent(readId(requestId))}/ack`, { digest, accepted: true }, options);
       return { status };
     },
-    async cancel(requestId) {
-      const { status } = await call("POST", `/v1/requests/${encodeURIComponent(readId(requestId))}/cancel`, {});
+    async cancel(requestId, options) {
+      const { status } = await call("POST", `/v1/requests/${encodeURIComponent(readId(requestId))}/cancel`, {}, options);
       return { status };
     },
   };

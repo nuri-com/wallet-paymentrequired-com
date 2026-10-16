@@ -199,6 +199,7 @@ export function createMcpConnection({ bridge, accountFlow, wallet, account, bank
 
   async function call(name, args = {}, opts = {}) { const started = Date.now(); let out; try { return (out = await callTool(name, args, opts)); } finally { const a = out?.structuredContent; logEvent("info", "tool_result", { tool: name, action: typeof args?.action === "string" ? args.action : null, status: a?.status ?? null, error: typeof a?.error === "string" ? a.error.slice(0, 80).replace(/[0-9A-Za-z]{12,}/g, "…") : null, ms: Date.now() - started, sfp: fingerprint(String(args?.session ?? "").split(".")[0]) || null, kfp: fingerprint(args?.wallet_key) || null }); } } async function callTool(name, args = {}, opts = {}) { logEvent("info", "tool_call", { tool: name, action: typeof args?.action === "string" ? args.action : null, fields: Object.keys(args ?? {}).filter(k => k !== "action").sort() }); // names only, never values
     try {
+      opts = { ...opts, deadline: opts.deadline ?? Date.now() + 25_000 };
       // request_id-only continuation: the model approved nothing yet but hands
       // back the reference from the connect result. Resolve it to a session
       // and run the action — the reference stays in the args as the tool's
@@ -273,7 +274,7 @@ export function createMcpConnection({ bridge, accountFlow, wallet, account, bank
     }
   }
 
-  async function callInner(name, args = {}, { signal } = {}) {
+  async function callInner(name, args = {}, { signal, deadline = Date.now() + 25_000 } = {}) {
     signal?.throwIfAborted();
     const entry = byName.get(name);
     if (entry) {
@@ -285,9 +286,18 @@ export function createMcpConnection({ bridge, accountFlow, wallet, account, bank
         if (broker) {
           let link = null;
           try { link = bridge.requireSession(args.session.split(".")[0]); } catch { link = null; }
-          if (link?.status === "pending" && link.brokerRequestId && link.context?.kind === "mcp_connection" && !link.context.grantFor
+          if ((link?.status === "pending" || (broker.consumerId === "wallet" && link?.status === "approved" && link.context?.walletId)) && link.brokerRequestId && link.context?.kind === "mcp_connection" && !link.context.grantFor
             && (Date.now() < link.expiresAt || link.context.walletId))
-            await broker.hydrate(args.session.split(".")[0]).catch((error) => logEvent("warn", "root_signer_hydrate_failed", { error: String(error?.message || error).slice(0, 80) }));
+          {
+            const hydration = await broker.hydrate(args.session.split(".")[0], { signal, deadline }).catch((error) => {
+              logEvent("warn", "root_signer_hydrate_failed", { error: String(error?.message || error).slice(0, 80) });
+              return { status: "pending" };
+            });
+            if (hydration?.status === "pending" && broker.consumerId === "wallet" && link.context.walletId) {
+              const data = { ok: true, status: "pending", request_id: args.session.split(".")[0], message: "Still connecting. Call again with the same session." };
+              return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data, isError: false };
+            }
+          }
         }
         if (name === "bank" || name === "account") { const grant = await bankGrant(args.session, { signal }); if (grant) return { content: [{ type: "text", text: JSON.stringify(grant) }], structuredContent: grant, isError: false }; }
         // Expiry UX (D-QUORUM C): a session-only tool whose connection ran out (or was
@@ -303,7 +313,7 @@ export function createMcpConnection({ bridge, accountFlow, wallet, account, bank
       if (charged && !charged.run) return { content: [{ type: "text", text: JSON.stringify(publicAnswer(charged.answer)) }], structuredContent: publicAnswer(charged.answer), isError: publicAnswer(charged.answer).status === "failed" };
       // wallet_key is only a payer handle for tools whose own schema does not take it; they would refuse it.
       if (!entry.tool.inputSchema?.properties?.wallet_key && args && Object.hasOwn(args, "wallet_key")) { const { wallet_key, ...rest } = args; args = rest; }
-      let data = publicAnswer(await entry.call(args, { signal }));
+      let data = publicAnswer(await entry.call(args, { signal, deadline }));
       if (charged?.paid && data && typeof data === "object" && !Array.isArray(data)) {
         charges.remember(name, charged, data);
         data = { ...data, fee: charged.paid };
@@ -343,10 +353,15 @@ export function createMcpConnection({ bridge, accountFlow, wallet, account, bank
     // this MCP boundary. The sync createSession above already persisted the row, so nothing here
     // is a Promise-as-session. Legacy (pre-broker) pending rows have no brokerRequestId and keep
     // the original callback path untouched.
-    if (broker && session.status === "pending"
+    const waitDeadline = Math.min(deadline, Date.now() + 25_000);
+    let hydration = null;
+    if (broker && (session.status === "pending" || (broker.consumerId === "wallet" && session.status === "approved" && session.context.walletId))
       && (Date.now() < session.expiresAt || (session.brokerRequestId && session.context.walletId))) {
-      if (!session.brokerRequestId && !Object.hasOwn(args, "request_id")) await broker.register(id);
-      else if (session.brokerRequestId) await broker.hydrate(id).catch((error) => logEvent("warn", "root_signer_hydrate_failed", { error: String(error?.message || error).slice(0, 80) }));
+      if (!session.brokerRequestId && !Object.hasOwn(args, "request_id")) await broker.register(id, { signal, deadline: waitDeadline });
+      else if (session.brokerRequestId) hydration = await broker.hydrate(id, { signal, deadline: waitDeadline }).catch((error) => {
+        logEvent("warn", "root_signer_hydrate_failed", { error: String(error?.message || error).slice(0, 80) });
+        return { status: "pending" };
+      });
     }
     if (Object.hasOwn(args, "request_id") && session.status === "pending" && Date.now() < session.expiresAt) {
       if (waitingChecks >= 64) throw new Error("connection_checks_busy: Too many checks are running at once. Try again in a moment.");
@@ -354,18 +369,22 @@ export function createMcpConnection({ bridge, accountFlow, wallet, account, bank
       try {
         // Wait quietly for the approval to land, at most ~25 s per call, so the
         // model never has to ask the person whether they tapped the link.
-        const deadline = Math.min(Date.now() + 25_000, session.expiresAt);
+        const deadline = Math.min(waitDeadline, session.expiresAt);
         let probedAt = 0;
         while (session.status === "pending" && Date.now() < deadline) {
           await sleep(Math.min(250, deadline - Date.now()), undefined, { signal });
           if (session.status !== "pending" || Date.now() - probedAt < 1_000) continue;
           probedAt = Date.now();
-          if (broker && session.brokerRequestId) await broker.hydrate(id).catch(() => null);
+          if (broker && session.brokerRequestId) hydration = await broker.hydrate(id, { signal, deadline }).catch(() => ({ status: "pending" }));
           await bridge.readStatus(id);
         }
       } finally { waitingChecks--; }
     }
 
+    if (hydration?.status === "pending" && broker?.consumerId === "wallet" && session.context.walletId) {
+      const data = { ok: true, status: "pending", request_id: id, message: "Still connecting. Call again with the same request_id." };
+      return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data, isError: false };
+    }
     const owned = session.status === "approved" && Boolean(session.result?.signer);
     if (owned && Date.now() < session.expiresAt) {
       session.context.connectedAt ??= Date.now();
