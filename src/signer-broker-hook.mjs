@@ -91,9 +91,17 @@ export async function createRootSignerHook({ bridge, config, wirexLogin = null, 
       await client.acknowledge(session.brokerRequestId, { digest: session.brokerDigest, accepted: true }).catch(() => null);
       return { status: "consumed" };
     }
+    // Every guest-link entry point (session, request_id, wallet_key) uses the same
+    // wallet-wide election; targeting a later link must not bypass an earlier tap.
+    if (consumerId === "wallet" && session.context?.kind === "mcp_connection" && session.context.walletId && !session.context.grantFor)
+      return hydrateClaims(session.context.walletId);
     const status = await client.readStatus(session.brokerRequestId);
     if (status.status !== "submitted") return status;
     const result = await client.readResult(session.brokerRequestId);
+    return adopt(sessionId, session, result);
+  }
+
+  async function adopt(sessionId, session, result) {
     // Open with B1's own codec (src/root-signer-envelope.mjs decryptRootSignerEnvelope) and check the
     // broker bindings with B1's assertRootSignerPayload; the bridge then re-verifies the signature
     // and persists exactly as it does for a local tap.
@@ -106,16 +114,55 @@ export async function createRootSignerHook({ bridge, config, wirexLogin = null, 
     return { status: "consumed" };
   }
 
-  // Guest claim links of one wallet (src/mcp-wallet-tool.mjs connectLink): every stored pending
-  // broker-bound row for it, oldest first, the way the local callback accepted any tapped link.
-  // Discovery is a read (src/browser-session-store.mjs brokerClaims); only a delivered result
-  // changes a row, through hydrate above. One failing link never blocks the others. The first
-  // adopted result records the owner (agent_kernel_tap is INSERT OR IGNORE), so later links stop there.
-  async function hydrateClaims(walletId) {
-    for (const id of bridge.sessionStore?.brokerClaims?.(walletId) ?? []) {
-      await hydrate(id).catch((error) => logEvent("warn", "root_signer_hydrate_failed", { error: String(error?.message || error).slice(0, 80) }));
-      let row = null; try { row = bridge.requireSession(id); } catch { row = null; }
-      if (row?.status === "approved") return;
+  // No adoption or ACK until every candidate was read. A missing/unreadable submitted
+  // result may precede the apparent winner: fail closed, never skip it. Broker approvedAt
+  // is its frozen submit timestamp, NOT link creation time or a browser-supplied timestamp.
+  // Equal milliseconds have no ordering in the current contract: refuse an arbitrary owner.
+  const claimReads = new Map();
+  function hydrateClaims(walletId) {
+    if (claimReads.has(walletId)) return claimReads.get(walletId);
+    const reading = readClaims(walletId).finally(() => claimReads.delete(walletId));
+    claimReads.set(walletId, reading);
+    return reading;
+  }
+
+  async function readClaims(walletId) {
+    try {
+      let first = null, tied = false;
+      const delivered = new Set(), candidates = new Set();
+      // A link read as pending before we discover a delivered candidate can submit
+      // BEFORE that candidate. Re-snapshot and re-read unresolved links after a
+      // candidate is known; new links minted during the first pass are included too.
+      for (let pass = 0; pass < 2; pass++) {
+        for (const id of bridge.sessionStore?.brokerClaims?.(walletId) ?? []) candidates.add(id);
+        for (const id of candidates) {
+          if (delivered.has(id)) continue; // submitted ciphertext/timestamp are immutable
+          const session = bridge.requireSession(id);
+          if (session.status === "approved") return { status: "consumed" };
+          const status = await client.readStatus(session.brokerRequestId);
+          if (status.requestId !== session.brokerRequestId) throw new Error("broker_claim_request_mismatch");
+          if (["pending", "expired", "cancelled"].includes(status.status)) continue;
+          if (status.status !== "submitted") throw new Error("broker_claim_status_unresolved");
+          const result = await client.readResult(session.brokerRequestId);
+          if (result.requestId !== session.brokerRequestId || result.digest !== status.resultDigest)
+            throw new Error("broker_claim_result_mismatch");
+          if (!Number.isSafeInteger(result.approvedAt) || result.approvedAt < 0 || result.approvedAt > Date.now())
+            throw new Error("broker_approved_at_invalid");
+          delivered.add(id);
+          if (!first || result.approvedAt < first.result.approvedAt) {
+            first = { id, session, result };
+            tied = false;
+          } else if (result.approvedAt === first.result.approvedAt) tied = true;
+        }
+        if (!first) return null;
+      }
+      if (tied) throw new Error("broker_claim_order_ambiguous");
+      // The existing bridge still owns ALL digest, decryption, binding, signature,
+      // expiry and replay checks; no fallback to a later result if these reject.
+      return first ? await adopt(first.id, first.session, first.result) : null;
+    } catch (error) {
+      logEvent("warn", "root_signer_hydrate_failed", { error: String(error?.message || error).slice(0, 80) });
+      return { status: "pending" };
     }
   }
 

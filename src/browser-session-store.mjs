@@ -49,16 +49,14 @@ export function createBrowserSessionStore({ path } = {}) {
   const byId = db.prepare("SELECT * FROM connection_sessions WHERE session_id = ?");
   const drop = db.prepare("DELETE FROM connection_sessions WHERE session_id = ?");
   const dropExpired = db.prepare("DELETE FROM connection_sessions WHERE expires_at <= ?");
-  // Read-only: one guest wallet's pending, unexpired, broker-bound claim links (data.context.walletId),
-  // oldest first. Same table and JSON the bridge writes (src/browser-bridge.mjs persistSession).
-  // ponytail: newest 32 only; each balance mints one link per call, raise the cap if taps beyond it are seen.
+  // Read-only: ALL pending, unexpired, broker-bound claim links of this guest wallet.
+  // Row order is discovery only; ownership is selected by broker submission time in the hook.
   const brokerClaims = db.prepare(`
     SELECT session_id FROM (
-      SELECT session_id, r FROM (SELECT session_id, rowid AS r, expires_at, CASE WHEN json_valid(data) THEN data END AS d FROM connection_sessions)
-      WHERE expires_at > ? AND json_extract(d, '$.status') = 'pending' AND json_extract(d, '$.brokerRequestId') IS NOT NULL
-        AND json_extract(d, '$.context.kind') = 'mcp_connection' AND json_extract(d, '$.context.walletId') = ?
-        AND json_extract(d, '$.context.grantFor') IS NULL
-      ORDER BY r DESC LIMIT 32)
+      SELECT session_id, rowid AS r, expires_at, CASE WHEN json_valid(data) THEN data END AS d FROM connection_sessions)
+    WHERE expires_at > ? AND json_extract(d, '$.status') = 'pending' AND json_extract(d, '$.brokerRequestId') IS NOT NULL
+      AND json_extract(d, '$.context.kind') = 'mcp_connection' AND json_extract(d, '$.context.walletId') = ?
+      AND json_extract(d, '$.context.grantFor') IS NULL
     ORDER BY r
   `);
 

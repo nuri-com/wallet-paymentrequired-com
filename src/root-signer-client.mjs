@@ -11,22 +11,43 @@ export function createRootSignerClient({ baseUrl, consumerId, credential, fetchI
   if (typeof fetchImpl !== "function") throw codeError("client_config", "fetchImpl_invalid", 500);
   const root = baseUrl.replace(/\/+$/, "");
 
+  // One deadline covers headers AND body. A failed call opens a shared short circuit,
+  // including registration after hydration, so an outage is not retried for every link.
+  let retryAt = 0;
   async function call(method, path, body) {
-    let response;
+    if (Date.now() < retryAt) throw codeError("broker_backoff", "broker_retry_later", 503);
+    const controller = new AbortController();
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(codeError("broker_unreachable", "broker_timeout", 503));
+      }, 3_000);
+    });
     try {
-      response = await fetchImpl(`${root}${path}`, {
-        method, cache: "no-store",
-        headers: { authorization: `Bearer ${credential}`, accept: "application/json", ...(body ? { "content-type": "application/json" } : {}) },
-        ...(body ? { body: JSON.stringify(body) } : {}),
-      });
+      return await Promise.race([timeout, (async () => {
+        let response;
+        try {
+          response = await fetchImpl(`${root}${path}`, {
+            method, cache: "no-store", signal: controller.signal,
+            headers: { authorization: `Bearer ${credential}`, accept: "application/json", ...(body ? { "content-type": "application/json" } : {}) },
+            ...(body ? { body: JSON.stringify(body) } : {}),
+          });
+        } catch (error) {
+          throw codeError("broker_unreachable", error?.message || "broker_unreachable", 503);
+        }
+        let json = null;
+        try { json = await response.json(); } catch { json = null; }
+        if (!response.ok) throw codeError(json?.error || `http_${response.status}`, json?.detail || json?.error || `http_${response.status}`, response.status);
+        if (!json || typeof json !== "object") throw codeError("broker_bad_response", "broker_bad_response", 502);
+        return json;
+      })()]);
     } catch (error) {
-      throw codeError("broker_unreachable", error?.message || "broker_unreachable", 503);
+      retryAt = Date.now() + 5_000;
+      throw error;
+    } finally {
+      clearTimeout(timer);
     }
-    let json = null;
-    try { json = await response.json(); } catch { json = null; }
-    if (!response.ok) throw codeError(json?.error || `http_${response.status}`, json?.detail || json?.error || `http_${response.status}`, response.status);
-    if (!json || typeof json !== "object") throw codeError("broker_bad_response", "broker_bad_response", 502);
-    return json;
   }
 
   return {
