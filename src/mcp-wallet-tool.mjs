@@ -296,9 +296,8 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
   // The same connect link connect_required mints (src/mcp-connection.mjs), so a
   // model sees one link shape everywhere. Best-effort: with no bridge wired the
   // sentence alone still names the next step.
-  // claimLinks (RAM): guest wallet id -> its newest broker-bound claim link, so a wallet_key-only
-  // balance can adopt the tap (finishTap below) the way the local callback ran onTap at once.
-  const claimLinks = new Map();
+  // claim links are found again from their stored rows (context.walletId), so a restart or a newer
+  // link never loses an earlier tap (broker.hydrateClaims, src/signer-broker-hook.mjs).
   async function connectLink(walletId, { signal } = {}) {
     try {
       if (!bridge || typeof bridge.createSession !== "function") return null;
@@ -306,9 +305,9 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
       signal?.throwIfAborted();
       // Root signer broker: the same registration connect_wallet does (src/mcp-connection.mjs:338), so this
       // link opens the signer too; the tap comes back through broker hydrate. No broker = the local link.
-      const url = broker ? (await broker.register(minted.request_id))?.approvalUrl : minted?.approval_url;
+      // Broker down: no link at all (never the local one: another Privy app, another page); logged, the read still answers.
+      const url = broker ? (await broker.register(minted.request_id).catch((error) => { logEvent("warn", "root_signer_register_failed", { code: error?.code ?? null }); return null; }))?.approvalUrl : minted?.approval_url;
       if (typeof url !== "string") return null;
-      if (broker && walletId) claimLinks.set(walletId, minted.request_id);
       return { ...minted, approval_url: url };
     } catch { return null; }
   }
@@ -473,8 +472,9 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
   async function balance(args, { signal } = {}) {
     if (args.new === "true") args = { ...args, new: true }; if (args.wallet_key === undefined && !args.session && args.new !== true) return await askFirst(); const fk = typeof args.session === "string" && args.session ? args.session.split(".")[0] : null, open = fk ? openFunds.get(fk) : null; if (open && Date.now() - open.at < 30 * 60_000) await fund({ ...args, action: "fund", amount: open.amount, ...(open.request_id ? { request_id: open.request_id } : {}) }, { signal }).catch(() => null); else if (open) openFunds.delete(fk); const wallet = await resolveWallet(args, { signal }); const merged = await mergeIntoFirst({ agentWallet, opRequestId, unitsToDecimal, unconfirmed: UNCONFIRMED }, args, consolidate ? wallet : { ...wallet, token: undefined }, { signal }); // models also send new as the text "true" (live 2026-09-28); without a token mergeIntoFirst only selects the newest usable wallet, never sends (split role)
     if (merged?.first) Object.assign(wallet, merged.first);
-    const shown = broker && !wallet.claimed ? claimLinks.get(wallet.id) : undefined; // tapped on the signer: adopt it first (bridge effects run onTap)
-    if (shown) { const state = await broker.hydrate(shown).catch(() => null); if (state && state.status !== "pending") claimLinks.delete(wallet.id); }
+    // Tapped on the signer: adopt every delivered claim result first (bridge effects run onTap). wallet_key was
+    // already checked by resolveWallet above; a fresh guest wallet has no link yet.
+    if (broker && !wallet.claimed && !wallet.created && typeof wallet.token === "string") await broker.hydrateClaims(wallet.id);
     const claim = await finishTap(wallet, { signal });
     if (claim?.status === "claimed") { wallet.claimed = true; wallet.owner = claim.wallet?.owner_address; }
     // The hand-over replaced the access: from here on only the new key opens this wallet.
@@ -502,6 +502,7 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
       const link = await connectLink(wallet.id, { signal });
       if (link) { answer.approval_url = link.approval_url; answer.request_id = link.request_id; if (typeof link.session === "string") answer.session = link.session; }
       answer.next = wallet.created ? KEY_SENTENCE : NEXT_CLAIM;
+      if (!link && broker) answer.next = "Wallet ready: show address and balance. Claim link: same call in a moment."; // broker down: no link to name
     }
     // Best-effort: the Gateway balance is a Circle API read; any failure simply omits the field.
     try {

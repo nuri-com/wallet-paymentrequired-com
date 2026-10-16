@@ -106,5 +106,18 @@ export async function createRootSignerHook({ bridge, config, wirexLogin = null, 
     return { status: "consumed" };
   }
 
-  return { consumerId, register, hydrate, client };
+  // Guest claim links of one wallet (src/mcp-wallet-tool.mjs connectLink): every stored pending
+  // broker-bound row for it, oldest first, the way the local callback accepted any tapped link.
+  // Discovery is a read (src/browser-session-store.mjs brokerClaims); only a delivered result
+  // changes a row, through hydrate above. One failing link never blocks the others. The first
+  // adopted result records the owner (agent_kernel_tap is INSERT OR IGNORE), so later links stop there.
+  async function hydrateClaims(walletId) {
+    for (const id of bridge.sessionStore?.brokerClaims?.(walletId) ?? []) {
+      await hydrate(id).catch((error) => logEvent("warn", "root_signer_hydrate_failed", { error: String(error?.message || error).slice(0, 80) }));
+      let row = null; try { row = bridge.requireSession(id); } catch { row = null; }
+      if (row?.status === "approved") return;
+    }
+  }
+
+  return { consumerId, register, hydrate, hydrateClaims, client };
 }
