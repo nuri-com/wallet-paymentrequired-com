@@ -5,6 +5,12 @@ flowchart LR
   O[Emin: physically separate repos] --> H[Hermes subagent: wallet staging]
 ```
 
+- 2026-10-16, source Emin via Hermes parent; implementer Hermes/GPT-6.1: issue #404, fix only P1 durable record-only
+  guest owner plus encrypted box before adoption/ACK and P2 complete-scan caller cancellation/deadline propagation.
+  Code `8bccca2040c825f3041c735eb44ad089be30c48a`, committed 2026-10-16T04:06:48+02:00
+  (`src/mcp-agent-wallet.mjs:394-416`, `src/browser-bridge.mjs:484-543`, `src/signer-broker-hook.mjs:88-186`).
+  Signer 19f2c45 retained; Wallet source only. No Mac product execution, new tests, secrets/provider/payment/activation,
+  SSH, prod, push or PR. Static diff check passed; runtime/cloud correctness UNVERIFIED. Parent reviews and owns release.
 - 2026-10-16, source Emin via Hermes parent; implementer Hermes/GPT-6.1 (Opus route exhausted): resolve timestamp ties/
   clock regression, five-minute ciphertext loss versus guest links, and local expiry recovery; coordinate owned Wallet
   and Signer endpoints, preserve approvedAt expiry/bindings/signatures/guest-key handover, historical ties fail closed.

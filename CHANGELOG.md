@@ -5,6 +5,17 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Guest claim crash recovery and caller budget, 2026-10-16 (source Emin; Hermes/GPT-6.1; unreleased)
+
+- Code `8bccca2040c825f3041c735eb44ad089be30c48a`, committed 2026-10-16T04:06:48+02:00.
+- Local owner and encrypted guest-key box commit together before broker approval/ACK, without invoking the hand-over;
+  approved replay participates in recovery (`src/mcp-agent-wallet.mjs:394-416`, `src/browser-bridge.mjs:484-543`,
+  `src/browser-session-store.mjs:51-65`). Old ACK-cleared, unapplied approvals may remain unrecoverable; no secret/order invented.
+- Complete candidate scans carry independent caller cancellation/deadline budgets through broker reads; exhaustion
+  remains pending without selecting a partial candidate set (`src/signer-broker-hook.mjs:88-186`, `src/root-signer-client.mjs:17-54`).
+- Static `git diff --check` passed. Runtime, cloud checks/build and crash/cancellation assertions UNVERIFIED.
+  No Mac product execution, new repository tests, Signer/Banking edits, provider calls, push or deploy. Parent owns release.
+
 ## Retained broker claim ordering/recovery, 2026-10-16 (source Emin; implementer Hermes/GPT-6.1; unreleased, not deployed)
 
 - Code `e06df06c12e0d5e35b4631ca9866fdfb65c63ee8`, committed 2026-10-16T03:33:17+02:00.
