@@ -698,7 +698,7 @@ function Bridge() {
         {!bindingChanged && !identityInvalidated.current && !retryUnavailable && !connectionAttempt(params, 'read')?.recovered
           && <button type="button" className="secondary" onClick={retrySelection}>Check again</button>}
         {(retryUnavailable || connectionAttempt(params, 'read')?.recovered)
-          && <p role="status">This wallet cannot be recovered here yet.</p>}
+          && <p role="status">This link is used or too old. Ask your agent for a new link.</p>}
       </Page>
     );
   }
@@ -761,7 +761,7 @@ class BridgeErrorBoundary extends React.Component {
   render() {
     if (this.state.failed) return (
       <main>
-        <p role="status">{this.state.recovering ? "This wallet cannot be recovered here yet." : "Couldn't connect."}</p>
+        <p role="status">{this.state.recovering ? "This link is used or too old. Ask your agent for a new link." : "Couldn't connect."}</p>
         {!this.state.recovering && <button type="button" onClick={this.retry}>Check again</button>}
       </main>
     );

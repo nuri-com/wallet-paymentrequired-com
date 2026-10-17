@@ -56,7 +56,13 @@ export function connectRequiredMessage(name, original = {}) {
 // link was raised by another tool, re-point every hint at THAT tool, so the
 // sentence, next_action and poll all name one and the same call.
 function connectRequired(name, data, original) {
-  const out = { ...data, status: "connect_required", message: connectRequiredMessage(name, original) };
+  // Live 2026-10-17 (DeepSeek v4.1): a repeat with the same request_id got the first-link sentence
+  // again, so the model re-sent the link and blamed the person. Say which of three states it is.
+  const again = typeof original?.request_id === "string" && original.request_id === data?.request_id;
+  const message = !again ? connectRequiredMessage(name, original)
+    : data?.status === "processing" ? "Logged in. One more tap: show this NEW link; then the same call again."
+      : "Not tapped yet. Same link as before; when the person says done, the same call again. If they did tap and it still says this, start over: account status with no request_id.";
+  const out = { ...data, status: "connect_required", message };
   const id = typeof out.request_id === "string" ? out.request_id : "";
   const { tool, args } = continueCall(name, id, original);
   if (out.next_action?.type === "open_link" && out.next_action.then) {
