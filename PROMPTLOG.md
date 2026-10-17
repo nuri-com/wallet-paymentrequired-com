@@ -1,5 +1,10 @@
 # Prompt log
 
+
+## 2026-10-17 — Emin; recorded by Hermes
+
+- "tldr explain what confused the model, then fix it, then test it again, is it clear that there is a split between banking, wallet, signer etc.?"
+
 ```mermaid
 flowchart LR
   O[Emin: physically separate repos] --> H[Hermes subagent: wallet staging]

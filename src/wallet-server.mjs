@@ -234,7 +234,9 @@ const server = http.createServer(async (req, res) => {
       if (req.method !== "GET") throw new HttpError(405, "method_not_allowed");
       return writeJson(req, res, 200, await signerClient.readStatus(sessionId));
     }
-    if (url.pathname === "/mcp") return await handleMcp(req, res);
+    // An agent given only the host (banking.paymentrequired.com) POSTs to "/": serve MCP there too,
+    // so the bare host is a working MCP URL. GET "/" stays the human page.
+    if (url.pathname === "/mcp" || (url.pathname === "/" && req.method !== "GET" && req.method !== "HEAD")) return await handleMcp(req, res);
     writeJson(req, res, 404, { ok: false, error: "not_found" });
   } catch (error) {
     const status = error instanceof HttpError ? error.status : 500;

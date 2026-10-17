@@ -6,12 +6,12 @@ const stages = {
   authorize_session: 'authorize the connection', approval: 'approve this request',
 };
 const selectionMessages = {
-  privy_selection_pin_missing: 'The wallet for this request is not connected.',
+  privy_selection_pin_missing: 'This link is for another wallet or is used. Ask your agent for a new link.',
   privy_selection_pin_conflict: 'This request points to different wallets. Approval is blocked.',
   privy_selection_metadata_missing: 'Your wallet details are incomplete.',
   privy_selection_metadata_conflict: 'Your wallet details do not agree. Approval is blocked.',
   privy_selection_not_connected: 'Your wallet is not connected yet.',
-  privy_selection_recovery: 'This wallet cannot be recovered here yet.',
+  privy_selection_recovery: 'This link is used or too old. Ask your agent for a new link.',
   privy_selection_ambiguous: 'Choose the wallet to use.',
   privy_selection_identity_changed: 'The account or request changed. Approval is blocked.',
 };
