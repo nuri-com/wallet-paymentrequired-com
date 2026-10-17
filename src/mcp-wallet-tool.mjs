@@ -239,7 +239,11 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
     // empty guest wallet (live test 2026-09-24). The session authorizes it.
     if (typeof args.session === "string" && args.session) {
       const listed = await tool.call({ action: "list", session: args.session }, { signal });
-      const wallets = listed?.ok ? listed.wallets ?? [] : [];
+      // Live 2026-10-17 (ministral-3b bench): a mistyped session listed nothing and fell through to a
+      // fresh empty guest wallet, so the model reported "0 USDC" for a wallet holding 0.92. A session
+      // that does not open is a connect step, never a new wallet.
+      if (!listed?.ok) throw connectFirstError();
+      const wallets = listed.wallets ?? [];
       const mine = wallets.findLast(w => w.usable !== false); // one wallet per person: the newest usable one (owner 2026-09-28)
       if (mine?.wallet_id) return { id: mine.wallet_id, address: mine.address, claimed: true, owner: mine.owner_address, session: args.session, created: false };
     }
