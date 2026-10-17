@@ -16,7 +16,7 @@ const WHICH = {
 const EXAMPLES = [
   [["bank"], "money? → bank iban. Say holdings (\"19.59 euros\"); balance_value is the same money, not extra."],
   [["bank"], "dad's card → manage add-payout-card (card_number, cardholder_name, card_label, request_id) → tap → send card_id=recipient_id"],
-  [["bank"], "my new card → bank card → manage activate (card_id, card_number_last4, expiry_date MM/YYYY)"],
+  [["bank"], "my new card → manage activate (card_number_last4, expiry_date as printed)"],
   [["bank"], "card limit → manage set-limit, limits {daily_limit: 500}"],
   [["bank"], "card check / 3-D Secure → manage 3ds_status"],
   [["account"], "agent limits → account limits"],
@@ -28,12 +28,12 @@ export function instructions(toolNames = ALWAYS_TOOLS) {
   const here = new Set(names);
   const away = ALWAYS_TOOLS.filter(name => !here.has(name));
   const other = [...new Set(away.map(name => HOME[name]))].map(url => `${away.filter(name => HOME[name] === url).join(", ")}: https://${url}`);
-  const connect = here.has("account") ? "account status → show link → after tap, same call with its request_id gives session." : "wallet balance with the session from the bank server; no session: wallet balance new:true.";
+  const connect = here.has("account") ? "only if you hold no session: account status → show link → after tap, the same call with its request_id gives the session." : "only if you hold no session: wallet balance new:true.";
   return `Tools here: ${names.join(", ")}.${other.length ? ` Elsewhere (separate MCP server, same session): ${other.join("; ")}.` : ""}
 ${names.map(name => WHICH[name]).filter(Boolean).join("\n")}
 
 RULES
-1. Send session on every call. No session yet: ${connect}
+1. Hold a session: send it on every call and go straight to the tool. Connect ${connect}
 2. approval_url in an answer: show it, wait for "done", then repeat the SAME call with the SAME request_id. A NEW link can follow: show it.
 3. Do what next says. Failed: say the error as written, don't guess a cause.
 4. Never invent card numbers, IBANs, names or ids: ask.
