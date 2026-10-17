@@ -5,6 +5,10 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — weak-model round 3 (2026-10-17)
+
+- Weak-model round 3 (2026-10-17; Emin; Hermes): wallet titled as the AGENT's own USDC wallet, not the person's bank; bridge is never a currency swap.
+
 ## Unreleased — model clarity (2026-10-17)
 
 - Model clarity (2026-10-17; source Emin; implementer Hermes): instructions name only the wallet tool and point to banking.paymentrequired.com/mcp for account and bank; "not tapped yet" and second-tap answers worded apart; bridge dead-end says ask for a new link.

@@ -9,7 +9,7 @@ const HOME = { wallet: "wallet.paymentrequired.com/mcp", account: "banking.payme
 const WHICH = {
   wallet: "- wallet: the agent's own USDC (not the person's bank). balance, fund, pay (paid API), send (USDC to 0x), discover (find paid APIs first), history, bridge.",
   bank: "- bank: the person's card and account. card, iban (IBAN + balance), send, swap (10 or more), transactions, manage (op: freeze, unfreeze, activate, set-limit, add-payout-card, payout-cards, 3ds_status, …).",
-  account: "- account: connect (status), identity check (verify), spending limits (limits).",
+  account: "- account: connect (status), identity check (verify), agent spending limits (limits). Never for money or cards.",
 };
 
 // Ask → call. Only the shapes small models got wrong in the bench.

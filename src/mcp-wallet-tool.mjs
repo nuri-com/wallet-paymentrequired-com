@@ -115,12 +115,13 @@ function unconfirmedSentence(reason, noun) {
 
 export const WALLET_TOOL = {
   name: "wallet",
-  title: "Your wallet",
-  description: "Your agent's USDC wallet: balance, add money, pay paid APIs (x402), send, find paid services, history, move to another chain. Send wallet_key always.",
+  // Live bench 2026-10-17: "Your wallet" pulled small models here for the person's bank balance and swaps.
+  title: "The agent's own USDC wallet",
+  description: "The AGENT's own USDC wallet, not the person's bank: its balance, add money, pay paid APIs (x402), send USDC, find paid services, history, move USDC to another chain. The person's euros and cards are the bank tool. Send wallet_key always.",
   inputSchema: {
     type: "object", additionalProperties: false, required: ["action"],
     properties: {
-      action: { type: "string", enum: ["balance", "fund", "pay", "send", "history", "bridge", "discover"], description: "balance: money and address. fund: add money from the person's account or wallet (amount). pay: a paid link. send: USDC to 0x. discover: find paid APIs. history: past payments. bridge: USDC to another chain (chain, amount)." },
+      action: { type: "string", enum: ["balance", "fund", "pay", "send", "history", "bridge", "discover"], description: "balance: money and address. fund: add money from the person's account or wallet (amount). pay: a paid link. send: USDC to 0x. discover: find paid APIs. history: past payments. bridge: move USDC to another blockchain (chain, amount); never a currency swap." },
       wallet_key: { type: "string", pattern: TOKEN.source, description: "From the first answer. Send always." },
       session: { type: "string", pattern: SESSION_PATTERN, description: "From connect. Send it on every call." },
       url: { type: "string", maxLength: 4096, description: "For pay: the paid link." },
