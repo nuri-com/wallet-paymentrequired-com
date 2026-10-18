@@ -126,7 +126,7 @@ export const WALLET_TOOL = {
     type: "object", additionalProperties: false, required: ["action"],
     allOf: [{ if: { properties: { action: { const: "ask" } } }, then: { required: ["wallet_key", "prompt", "max_amount", "request_id"] } }],
     properties: {
-      action: { type: "string", enum: ["balance", "fund", "pay", "ask", "send", "history", "bridge", "discover"], description: "balance: money and address. fund: add money (amount). pay: paid link. ask: AI answer (wallet_key, prompt, max_amount; quality fast or smart). send: USDC to 0x. discover: paid APIs. history: past payments. bridge: move USDC to another blockchain; never a currency swap." },
+      action: { type: "string", enum: ["balance", "fund", "pay", "ask", "send", "history", "bridge", "discover"], description: "balance: money and address. fund: add money (amount). pay: paid link. ask: AI answer (session or wallet_key, prompt, max_amount, request_id; quality fast or smart). send: USDC to 0x. discover: paid APIs. history: past payments. bridge: move USDC to another blockchain; never a currency swap." },
       wallet_key: { type: "string", pattern: TOKEN.source, description: "From the first answer. Send always." },
       session: { type: "string", pattern: SESSION_PATTERN, description: "From connect. Send it on every call." },
       url: { type: "string", maxLength: 4096, description: "For pay: the paid link." },
@@ -723,7 +723,10 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
 
   async function ask(args, { signal } = {}) {
     const errors = [];
-    if (typeof args.wallet_key !== "string" || !TOKEN.test(args.wallet_key)) errors.push("wallet_key");
+    // Live 2026-10-18: a connected person (session, no wallet_key) got "Ask needs wallet_key", although pay
+    // (resolveWallet :251-259) already opens the owner's wallet from the session. Either one is enough.
+    const hasSession = typeof args.session === "string" && args.session.length > 0;
+    if (!hasSession && (typeof args.wallet_key !== "string" || !TOKEN.test(args.wallet_key))) errors.push("wallet_key or session");
     if (typeof args.prompt !== "string" || !args.prompt.trim() || args.prompt.length > 32000) errors.push("prompt (1–32000 characters)");
     if (typeof args.max_amount !== "string" || !AMOUNT.test(args.max_amount) || !/[1-9]/.test(args.max_amount)) errors.push("max_amount (positive USDC string, like 0.05)");
     if (args.quality !== undefined && !Object.hasOwn(ASK_MODELS, args.quality)) errors.push("quality (fast or smart)");
@@ -734,7 +737,7 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
     const model = ASK_MODELS[args.quality ?? "fast"];
     // One unpaid request generates the withheld answer. A dry-run would generate a second
     // invoice without an idempotency key. The durable pay runtime enforces the cap before signing.
-    const result = await pay({ wallet_key: args.wallet_key, ...(args.session ? { session: args.session } : {}),
+    const result = await pay({ ...(args.wallet_key !== undefined ? { wallet_key: args.wallet_key } : {}), ...(args.session ? { session: args.session } : {}),
       url: ASK_URL, method: "POST", body: { model, messages: [{ role: "user", content: args.prompt }], stream: false },
       max_amount: args.max_amount, request_id: requestId }, { signal, preflight: false });
     if (!result.ok || result.status !== "done") return { ...result, request_id: requestId };

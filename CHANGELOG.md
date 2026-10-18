@@ -5,6 +5,10 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — wallet ask with session (2026-10-18)
+
+- wallet ask accepts the person's session as well as a wallet_key, like pay does (live 2026-10-18: a connected person got 'Ask needs wallet_key').
+
 ## Unreleased — weak-model round 3 (2026-10-17)
 
 - Add wallet ask: bounded router AI calls using the existing durable pay transport, with fast/smart quality, answer, USDC cost and receipt.
