@@ -142,7 +142,9 @@ try {
   assert.equal(state.payments, 1);
   const conflict = await tool.call({ ...ask, prompt: 'Different question' });
   assert.equal(conflict.ok, false);
-  assert.match(conflict.error, /request_id_conflict/);
+  await assert.rejects(runtime.pay({ walletId: row.id, requestId: state.calls[0].id, url: ASK_URL, method: 'POST',
+    body: { ...state.calls[0].body, messages: [{ role: 'user', content: 'Different question' }] }, maxAmountUnits: '50000' }), /request_id_conflict/);
+  assert.equal(state.payments, 1, 'A conflicting prompt cannot pay again');
 
   const capped = { ...ask, request_id: 'too-small', max_amount: '0.001' };
   const refused = await tool.call(capped);
