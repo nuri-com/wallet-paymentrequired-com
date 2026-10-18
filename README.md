@@ -1,7 +1,7 @@
 # paymentrequired wallet service
 
 The wallet service of paymentrequired.com, served at `wallet.paymentrequired.com`. It runs the
-`wallet` MCP tool (`src/mcp-wallet-tool.mjs:116-123`): balance, fund, pay, send, history, bridge,
+`wallet` MCP tool (`src/mcp-wallet-tool.mjs`): balance, fund, pay, ask, send, history, bridge,
 discover. The agent Safe is the payer. It holds no Wirex client and no Wirex credentials. Card,
 IBAN, account and bank-root payments belong to the banking service.
 
@@ -29,6 +29,32 @@ Boot refuses when:
 - any of `WIREX_TOKEN_URL`, `WIREX_COMPANY_ID`, `WIREX_CLIENT_ID` or `WIREX_CLIENT_SECRET` is set (`src/service-mode.mjs:24-28`)
 - an agent custody value is missing (`src/server-boot-check.mjs:6-15`)
 - `SERVICE_RPC_SECRET` is shorter than 32 characters (`src/service-rpc.mjs:22`)
+
+## Ask AI from the agent wallet
+
+One `wallet` tool call (`src/mcp-wallet-tool.mjs`, `ask`):
+
+```json
+{"action":"ask","wallet_key":"<your wallet_key>","prompt":"Explain x402 in one sentence.","max_amount":"0.05","quality":"fast","request_id":"explain-x402-1"}
+```
+
+Returns `answer`, `cost` (USDC), `model`, `receipt` and `request_id`, plus `ok`.
+`quality` defaults to `fast`; `smart` selects the other model in `ASK_MODELS`.
+The fixed router URL receives a non-streaming POST. It generates an answer, returns its
+exact x402 invoice, then releases the answer after the existing wallet pay transport settles it.
+No preflight generation and no new signing implementation.
+
+Supply `request_id` before spending. Retry with the same ID and unchanged fields, including
+the cap; the durable payment journal prevents a second payment, including after a restart.
+An over-cap invoice signs and pays nothing: **send again with a NEW request_id and a higher
+max_amount**. The rejected operation remains final; changing its cap conflicts with its binding.
+If the paid response body was lost, same-ID replay reads the router's retained answer without
+another payment signature (`src/agent-kernel-runtime.mjs`).
+
+Offline checks (Node 22, no wallet credentials or network): `npm run check:ask` and
+`npm run check:ask:regression`. They exercise the real x402 parsing/signing and durable journal
+against a fake router, RPC, signer, Kernel account and wallet-credential adapter. CI runs these
+on GitHub-hosted runners; no live payment or deployment is part of the checks.
 
 ## Surface
 
