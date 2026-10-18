@@ -5,6 +5,10 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — key recovery text (2026-10-18)
+
+- Lost wallet_key answer names the exact steps: tap this link, then balance with the session from THIS answer (live 2026-10-18: balance with the older banking session never returned the key). Live proof: wallet ask paid 0.002021 USDC, tx 0x1c47c87f58a4702a38ed4e0b188705a338c147ad8aabdee570d3a1dd414b38f9, answer ROUTER-OK.
+
 ## Unreleased — wallet ask with session (2026-10-18)
 
 - wallet ask accepts the person's session as well as a wallet_key, like pay does (live 2026-10-18: a connected person got 'Ask needs wallet_key').

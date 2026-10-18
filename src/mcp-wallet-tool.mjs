@@ -420,7 +420,10 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
     const link = await connectLink(undefined, { signal });
     return { ok: false, status: "connect_required", error: "This wallet needs its newest wallet_key, and this call did not send it.",
       ...(link ? { approval_url: link.approval_url, request_id: link.request_id, ...(typeof link.session === "string" ? { session: link.session } : {}) } : {}),
-      next: "Send the newest wallet_key. Lost: show link, then balance, same request_id." };
+      // Live 2026-10-18: the old "Lost: show link, then balance, same request_id" left out which session; a
+      // balance with the OLD (banking) session never returns the key. Name the exact steps.
+      next: link ? "Have the newest wallet_key? Resend with it. Lost it: show this link; after the tap call balance with the session from THIS answer; it returns the wallet_key once. Then repeat this call with it."
+        : "Send the newest wallet_key." };
   }
   // Lost key after connect: the tap sealed the re-derived key under the session's pass
   // (src/browser-bridge.mjs acceptCallback). Only this caller's pass opens it; it is handed out
