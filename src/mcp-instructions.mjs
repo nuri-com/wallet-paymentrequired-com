@@ -21,6 +21,7 @@ const EXAMPLES = [
   [["bank"], "card check / 3-D Secure → manage 3ds_status"],
   [["account"], "agent limits → account limits"],
   [["wallet"], "agent wallet → wallet balance (session)"],
+  [["wallet"], "AI answer → wallet ask (wallet_key, prompt, max_amount like 0.05, request_id; quality fast or smart). Retry unchanged with the same request_id. Over-cap invoice: send again with a NEW request_id and a higher max_amount."],
 ];
 
 export function instructions(toolNames = ALWAYS_TOOLS) {
