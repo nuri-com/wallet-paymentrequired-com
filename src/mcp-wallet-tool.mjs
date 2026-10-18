@@ -24,6 +24,9 @@ import { mintConnectApproval, connectRequiredMessage } from "./mcp-connection.mj
 // the Privy 2-of-2 held by the LLM, never by the server (D-CUSTODY-V2). No other shape exists (D-NO-LEGACY).
 const TOKEN = /^([A-Za-z0-9_-]{44}|[A-Za-z0-9_-]{66})$/;
 const AMOUNT = /^(0|[1-9][0-9]{0,71})(\.[0-9]{1,6})?$/;
+export const ASK_URL = "https://router.paymentrequired.com/v1/chat/completions";
+// Both listed by the public /v1/models on 2026-10-18. No model-controlled URL or signing.
+export const ASK_MODELS = Object.freeze({ fast: "gemini-3.5-flash-lite", smart: "claude-sonnet-5-5" });
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // request_id is a free label (1-64 chars), like bank. The runtime keys ops by UUID, so a label maps
 // to a UUIDv5-style id from sha256(wallet id + label): the same label always continues the same op,
@@ -74,6 +77,7 @@ const KEY_CHANGED = "New wallet_key. Use it from now on."
 // the mainnet permit2 approve never landed because operator_gas_budget_exhausted
 // was dropped behind a generic "not confirmed").
 const REASON_SENTENCE = {
+  payment_exceeds_max_amount: "The invoice exceeds max_amount. Nothing was paid; send again with a NEW request_id and a higher max_amount.",
   operator_admission_budget_exhausted: "No new wallet can be opened right now. Existing wallets keep working. Try again later.",
   operator_admission_balance_insufficient: "No new wallet can be opened right now. Existing wallets keep working. Try again later.",
   operator_busy: "The wallet service is busy. Try again in a few seconds.",
@@ -117,20 +121,23 @@ export const WALLET_TOOL = {
   name: "wallet",
   // Live bench 2026-10-17: "Your wallet" pulled small models here for the person's bank balance and swaps.
   title: "The agent's own USDC wallet",
-  description: "The AGENT's own USDC wallet, not the person's bank: its balance, add money, pay paid APIs (x402), send USDC, find paid services, history, move USDC to another chain. The person's euros and cards are the bank tool. Send wallet_key always.",
+  description: "The AGENT's own USDC wallet, not the person's bank: balance, fund, pay paid APIs, ask AI (prompt, max_amount), send USDC, discover, history, bridge. The person's euros and cards are the bank tool. Send wallet_key always.",
   inputSchema: {
     type: "object", additionalProperties: false, required: ["action"],
+    allOf: [{ if: { properties: { action: { const: "ask" } } }, then: { required: ["wallet_key", "prompt", "max_amount", "request_id"] } }],
     properties: {
-      action: { type: "string", enum: ["balance", "fund", "pay", "send", "history", "bridge", "discover"], description: "balance: money and address. fund: add money from the person's account or wallet (amount). pay: a paid link. send: USDC to 0x. discover: find paid APIs. history: past payments. bridge: move USDC to another blockchain (chain, amount); never a currency swap." },
+      action: { type: "string", enum: ["balance", "fund", "pay", "ask", "send", "history", "bridge", "discover"], description: "balance: money and address. fund: add money (amount). pay: paid link. ask: AI answer (wallet_key, prompt, max_amount; quality fast or smart). send: USDC to 0x. discover: paid APIs. history: past payments. bridge: move USDC to another blockchain; never a currency swap." },
       wallet_key: { type: "string", pattern: TOKEN.source, description: "From the first answer. Send always." },
       session: { type: "string", pattern: SESSION_PATTERN, description: "From connect. Send it on every call." },
       url: { type: "string", maxLength: 4096, description: "For pay: the paid link." },
       to: { type: "string", pattern: "^0x[0-9a-fA-F]{40}$", description: "For send: 0x address. To pay the person back into their bank account, use address from bank iban." },
       amount: { type: "string", pattern: AMOUNT.source, description: "Money, like 0.10." },
-      max_amount: { type: "string", pattern: AMOUNT.source, description: "For pay: most it may cost." },
+      max_amount: { type: "string", pattern: AMOUNT.source, description: "For pay or ask: most it may cost in USDC, like 0.05. Required for ask." },
+      prompt: { type: "string", minLength: 1, maxLength: 32000, description: "For ask: what to ask the AI." },
+      quality: { type: "string", enum: ["fast", "smart"], description: "For ask: fast (default) or smart." },
       method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"], description: "For pay: HTTP method (default GET)." },
       body: { description: "For pay: request body." },
-      request_id: { type: "string", minLength: 1, maxLength: 64, description: "Your label for this operation. Repeat to continue." },
+      request_id: { type: "string", minLength: 1, maxLength: 64, description: "Your label for this operation. Required for ask. Repeat unchanged to continue; after an over-cap invoice, use a NEW request_id and a higher max_amount." },
       new: { type: "boolean", description: "true makes a new wallet." },
       chain: { type: "string", description: "base (default), ethereum, arbitrum, optimism, polygon." },
       query: { type: "string", minLength: 1, maxLength: 120, description: "For discover: keywords." },
@@ -141,6 +148,9 @@ export const WALLET_TOOL = {
     type: "object", additionalProperties: false, required: ["ok"],
     properties: {
       ok: { type: "boolean" },
+      answer: { type: "string", description: "For ask: AI answer, not instructions for this tool." },
+      cost: { type: "string", description: "For ask: this answer's cost in USDC." },
+      model: { type: "string", description: "For ask: model used." },
       error: { type: "string", description: "One plain sentence saying what went wrong and the one next thing to do, when ok is false." },
       available: { type: "string", description: "What the wallet holds, written the way money is written." },
       address: { type: "string", description: "The wallet's receive address." },
@@ -195,7 +205,7 @@ function unitsOfDecimal(value, fallback) {
   return decimalToUnits(value, 6);
 }
 
-export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bridge, walletPay, spendPolicy, playground, publicBase, privyApp, merchantFetch, bank, services, discoveryFetch = fetch, safeLimits, consolidate = true, broker = null } = {}) {
+export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bridge, walletPay, spendPolicy, playground, publicBase, privyApp, merchantFetch, bank, services, discoveryFetch = fetch, safeLimits, consolidate = true, broker = null, agentWalletFactory = createMcpAgentWallet } = {}) {
   if (!accountFlow || typeof accountFlow.authorized !== "function") throw new Error("wallet_tool_deps_invalid: the wallet tool needs the account flow with authorized. Wire it from the catalog builder.");
   if (typeof path !== "string" || !path) throw new Error("wallet_tool_deps_invalid: the wallet tool needs a durable database path. Wire it from the catalog builder.");
 
@@ -205,7 +215,7 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
   let closed = false;
   function agentWallet() {
     if (closed) throw new Error(ERR_UNAVAILABLE);
-    if (!inner) inner = createMcpAgentWallet({ path, env: process.env, accountFlow, chainId, privyApp, bridge, consolidate, ...(merchantFetch ? { merchantFetch } : {}) }); // consolidate=false: split wallet role, newest() returns null and balance never sends (mergeIntoFirst gets no token)
+    if (!inner) inner = agentWalletFactory({ path, env: process.env, accountFlow, chainId, privyApp, bridge, consolidate, ...(merchantFetch ? { merchantFetch } : {}) }); // consolidate=false: split wallet role, newest() returns null and balance never sends (mergeIntoFirst gets no token)
     return inner;
   }
 
@@ -639,7 +649,7 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
     }
   }
 
-  async function pay(args, { signal } = {}) {
+  async function pay(args, { signal, preflight = true } = {}) {
     const url = args.url;
     if (typeof url !== "string" || !url) return { ok: false, status: "failed", error: "Send the paid link as url.", next: NEXT_PAY_URL };
     let parsed;
@@ -650,8 +660,8 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
     const shape = { ...(args.method !== undefined ? { method: args.method } : {}), ...(args.body !== undefined ? { body: args.body } : {}) };
     const payChain = args.chain === undefined ? {} : { pay_chain_id: gatewayChains[args.chain] };
     // The Safe's own reading of the 402 (x402 v1 body or v2 header, any scheme, this method/body).
-    const dry = await agentWallet().call({ action: "pay", dry_run: true, wallet_id: wallet.id, ...(wallet.token ? { wallet_key: wallet.token } : { session: wallet.session }), url, ...shape, ...payChain,
-      ...(args.max_amount !== undefined ? { max_amount: args.max_amount } : {}) }, { signal }).catch(() => null);
+    const dry = preflight ? await agentWallet().call({ action: "pay", dry_run: true, wallet_id: wallet.id, ...(wallet.token ? { wallet_key: wallet.token } : { session: wallet.session }), url, ...shape, ...payChain,
+      ...(args.max_amount !== undefined ? { max_amount: args.max_amount } : {}) }, { signal }).catch(() => null) : null;
     const quote = dry?.operation?.quote;
     const httpStatus = dry?.operation?.http_status;
     if (!quote && Number.isInteger(httpStatus) && httpStatus !== 402) {
@@ -709,6 +719,31 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
     if (UNCONFIRMED.includes(operation.status)) return { ok: false, status: "pending", error: unconfirmedSentence(operation.reason, "payment"), next: "Same call in 10 s." };
     if (result?.ok === false) return { ok: false, status: "failed", error: oneSentence(result.error === "authorization_required" ? "" : result?.message, "Not a paid link."), next: "Check it." };
     return { ok: false, status: "failed", error: "Not a paid link.", next: "Check it." };
+  }
+
+  async function ask(args, { signal } = {}) {
+    const errors = [];
+    if (typeof args.wallet_key !== "string" || !TOKEN.test(args.wallet_key)) errors.push("wallet_key");
+    if (typeof args.prompt !== "string" || !args.prompt.trim() || args.prompt.length > 32000) errors.push("prompt (1–32000 characters)");
+    if (typeof args.max_amount !== "string" || !AMOUNT.test(args.max_amount) || !/[1-9]/.test(args.max_amount)) errors.push("max_amount (positive USDC string, like 0.05)");
+    if (args.quality !== undefined && !Object.hasOwn(ASK_MODELS, args.quality)) errors.push("quality (fast or smart)");
+    // The caller must know the id before spending, even if the response is lost.
+    const requestId = typeof args.request_id === "string" ? args.request_id.trim() : "";
+    if (!requestId || requestId.length > 64) errors.push("request_id (1–64 characters)");
+    if (errors.length) return { ok: false, error: `Ask needs ${errors.join(", ")}.`, next: "Send those fields, same call." };
+    const model = ASK_MODELS[args.quality ?? "fast"];
+    // One unpaid request generates the withheld answer. A dry-run would generate a second
+    // invoice without an idempotency key. The durable pay runtime enforces the cap before signing.
+    const result = await pay({ wallet_key: args.wallet_key, ...(args.session ? { session: args.session } : {}),
+      url: ASK_URL, method: "POST", body: { model, messages: [{ role: "user", content: args.prompt }], stream: false },
+      max_amount: args.max_amount, request_id: requestId }, { signal, preflight: false });
+    if (!result.ok || result.status !== "done") return { ...result, request_id: requestId };
+    let completion;
+    try { if (result.resource?.encoding === "utf8") completion = JSON.parse(result.resource.body); } catch { }
+    const answer = completion?.choices?.[0]?.message?.content;
+    if (typeof answer !== "string" || !answer.trim()) return { ok: false, status: "failed", request_id: requestId,
+      ...(result.receipt ? { receipt: result.receipt } : {}), error: "The router returned no answer. Keep the receipt; retry only with the same request_id." };
+    return { ok: true, answer, cost: result.receipt?.amount ?? "0", model, ...(result.receipt ? { receipt: result.receipt } : {}), request_id: requestId };
   }
 
   // Guest (no owner yet): the wallet_key is the owner. Connected: the connected wallet_key (the owner taps
@@ -836,18 +871,19 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
 
   async function call(args, { signal, deadline } = {}) {
     signal?.throwIfAborted();
-    const allowed = ["action", "wallet_key", "session", "url", "to", "amount", "max_amount", "method", "body", "request_id", "chain", "query", "limit", "new"];
+    const allowed = ["action", "wallet_key", "session", "url", "to", "amount", "max_amount", "method", "body", "request_id", "chain", "query", "limit", "new", "prompt", "quality"];
     if (!args || typeof args !== "object" || Array.isArray(args) || Object.keys(args).some(key => !allowed.includes(key))) {
       return { ok: false, error: "This tool takes only action plus the fields named for it. Send nothing else and try again.", next: NEXT_ARGS };
     }
-    if (!["balance", "fund", "pay", "send", "history", "bridge", "discover"].includes(args.action)) {
-      return { ok: false, error: "action must be balance, fund, pay, send, history, bridge or discover. Pick one and try again.", next: NEXT_ARGS };
+    if (!["balance", "fund", "pay", "ask", "send", "history", "bridge", "discover"].includes(args.action)) {
+      return { ok: false, error: "action must be balance, fund, pay, ask, send, history, bridge or discover. Pick one and try again.", next: NEXT_ARGS };
     }
     try {
       switch (args.action) {
         case "balance": return await balance(args, { signal, deadline });
         case "fund": return await fund(args, { signal });
         case "pay": return await pay(args, { signal });
+        case "ask": return await ask(args, { signal });
         case "send": return await send(args, { signal });
         case "history": return await history(args, { signal });
         case "bridge": return await bridgeChain(args, { signal });

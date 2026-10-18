@@ -7,6 +7,7 @@ flowchart LR
 
 ## Unreleased — weak-model round 3 (2026-10-17)
 
+- Add wallet ask: bounded router AI calls using the existing durable pay transport, with fast/smart quality, answer, USDC cost and receipt.
 - Weak-model round 3 (2026-10-17; Emin; Hermes): wallet titled as the AGENT's own USDC wallet, not the person's bank; bridge is never a currency swap.
 
 ## Unreleased — model clarity (2026-10-17)

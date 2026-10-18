@@ -59,6 +59,7 @@ function merchantUrl(value) {
 // D-SAFE-NO-LIMITS: any method, optional body. The body travels with an RFC 9530
 // Content-Digest, so the same bytes are bound to the unpaid and the paid request.
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
+const ROUTER_CHAT_URL = 'https://router.paymentrequired.com/v1/chat/completions';
 export function requestShape({ method = 'GET', body, contentType } = {}) {
   check(METHODS.includes(method), 'invalid_http_method');
   if (body === undefined || body === null) return { method, headers: {}, bytes: null };
@@ -97,7 +98,8 @@ async function merchantGet(url, headers = {}, onHeaders = () => {}, shape = requ
       res.on('end', () => { clearTimeout(timer); resolve({ status: res.statusCode, headers: res.headers, bytes: Buffer.concat(chunks) }); });
       res.on('aborted', () => reject(new Error('merchant_body_aborted')));
     });
-    timer = setTimeout(() => req.destroy(new Error('merchant_timeout')), 20000);
+    // The postpriced router generates the answer BEFORE returning its 402 (up to 180 s).
+    timer = setTimeout(() => req.destroy(new Error('merchant_timeout')), url === ROUTER_CHAT_URL ? 190000 : 20000);
     req.on('error', e => { clearTimeout(timer); reject(e); }); req.end(shape.bytes ?? undefined);
   });
 }
@@ -1050,7 +1052,21 @@ export function createKernelRuntime({ path, store, env = process.env, chainId = 
           active.delete(`${walletId}:${requestId}`); busy--;
         }
       }
-      return publicOp(op); // Never regenerate or redispatch an interrupted operation.
+      // A paid router answer is recoverable with its private Idempotency-Key alone.
+      // Never attach a payment header or sign again; a new 402 is not payable here.
+      if (kind === 'pay' && url === ROUTER_CHAT_URL && op.state === 'paid' && !op.data.result?.resource) {
+        active.add(`${walletId}:${requestId}`); busy++;
+        try {
+          const response = await merchantFetch(url, { 'Idempotency-Key': op.request }, undefined, requestShape(req));
+          if (response.status >= 200 && response.status < 300) {
+            op.data.contentDelivered = true;
+            op.data.result = { ...op.data.result, httpStatus: response.status, contentDelivered: true, resource: resource(response) };
+            save(op);
+          }
+        } catch { /* Keep the original receipt; the same request can recover later. */ }
+        finally { active.delete(`${walletId}:${requestId}`); busy--; }
+      }
+      return publicOp(op); // Never regenerate or redispatch a payment authorization.
     }
     active.add(`${walletId}:${requestId}`); busy++;
     try {

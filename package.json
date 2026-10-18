@@ -8,7 +8,9 @@
     "start": "node src/wallet-server.mjs",
     "build:privy": "esbuild public/privy-bridge.jsx --bundle --minify --format=iife --platform=browser --target=es2022 --outfile=public/privy-bridge.js",
     "precheck": "for f in src/*.mjs public/short-link.mjs; do node --check \"$f\" || exit 1; done",
-    "check": "npm run precheck && node scripts/check-import-closure.mjs"
+    "check": "npm run precheck && node scripts/check-import-closure.mjs",
+    "check:ask": "node --experimental-test-module-mocks scripts/check-wallet-ask.mjs",
+    "check:ask:regression": "node scripts/check-wallet-ask-regression.mjs"
   },
   "engines": {
     "node": ">=22"
