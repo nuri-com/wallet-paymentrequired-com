@@ -198,7 +198,7 @@ function operationView(value) {
   const merchantError = field('merchant_error', 'merchantError'); if (typeof merchantError === 'string' && merchantError) out.merchant_error = merchantError.slice(0, 300);
   const httpStatus = field('http_status', 'httpStatus');
   if (Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599) out.http_status = httpStatus;
-  if (field('settlement') === 'verified') out.settlement = 'verified';
+  if (['verified', 'chain_discovered'].includes(field('settlement'))) out.settlement = 'verified';
   if (field('outcome_unknown') === true || UNCONFIRMED.includes(out.status)) out.outcome_unknown = true;
   // The runtime records a machine `reason` for every failure (e.g.
   // operator_gas_budget_exhausted). It must reach the caller, never be dropped

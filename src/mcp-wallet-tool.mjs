@@ -713,6 +713,8 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
       return { ok: true, status: "done", receipt, ...(operation.resource ? { resource: operation.resource } : {}), next: "Paid." };
     }
     if (operation.status === "not_required") return { ok: true, status: "done", ...(operation.resource ? { resource: operation.resource } : {}), next: "Paid." };
+    if (operation.resource && operation.content_delivered !== false) return { ok: true, status: "delivered_unverified", request_id: args.request_id ?? requestId,
+      resource: operation.resource, next: "Content delivered, but payment settlement is not confirmed; use this content and retry only with the same request_id, never a new payment." };
     if (signerExpired(operation.reason)) return await signerExpiredAnswer({ signal });
     const reason = reasonSentence(operation.reason, "payment");
     if (reason) return { ok: false, status: "failed", error: reason };

@@ -16,7 +16,7 @@ import { entryPoint07Abi, toPackedUserOperation, getUserOperationHash } from 'vi
 import { createKernelAccount } from '@zerodev/sdk';
 import { getEntryPoint, KERNEL_V3_1 } from '@zerodev/sdk/constants';
 import { signerToEcdsaValidator } from '@zerodev/ecdsa-validator';
-import { PERMIT2_ADDRESS } from '@x402/evm';
+import { PERMIT2_ADDRESS, x402ExactPermit2ProxyABI, x402UptoPermit2ProxyABI } from '@x402/evm';
 import { decodePaymentResponseHeader } from '@x402/core/http';
 import { createAgentKernelWallet, NO_LIMIT } from './agent-kernel-wallet.mjs';
 import { parseChallenge, selectOffer, quoteOffer, payWithSafe, nonceUsed, registerPaymentScheme, STANDING_PERMIT2_ALLOWANCE } from './safe-pay.mjs';
@@ -205,7 +205,7 @@ export function createKernelRuntime({ path, store, env = process.env, chainId = 
       ...(op.data.reason ? { reason: op.data.reason } : {}),
       ...(op.data.offer ? { amountUnits: op.data.offer.amount, scheme: op.data.offer.scheme, rail: op.data.offer.method } : {}),
       ...(op.data.quote ? { quote: op.data.quote } : {}),
-      ...(op.data.paymentReceipt?.transaction ? { transaction: op.data.paymentReceipt.transaction } : {}),
+      ...(op.data.paymentReceipt?.transaction && !res.transaction ? { transaction: op.data.paymentReceipt.transaction } : {}),
       createdAt: op.created };
   }
   function start(walletId, requestId, kind, binding) {
@@ -510,24 +510,68 @@ export function createKernelRuntime({ path, store, env = process.env, chainId = 
   const metaAbi = parseAbi(['function name() view returns (string)', 'function version() view returns (string)']);
   const tokenBalance = (token, a, block) => read(token, abi, 'balanceOf', [a], block);
   const tokenAllowance = (token, a, block) => read(token, abi, 'allowance', [a, PERMIT2_ADDRESS], block);
-  // Evidence, not trust: the merchant's receipt names a transaction; it must move exactly the
-  // offer's token from the Safe to payTo (upto: at most the signed ceiling) and use our nonce.
+  // Evidence, not trust: a receipt must move the offer's token from the Safe to payTo
+  // (upto: at most the signed ceiling) and use our nonce. Some merchants omit their receipt.
+  const authorizationAbi = parseAbi(['event AuthorizationUsed(address indexed authorizer,bytes32 indexed nonce)']);
   async function verifyPayment(op) {
     const reported = op.data.paymentReceipt, row = wallet(op.wallet), offer = op.data.offer;
-    if (!reported || !offer) return false;
-    check(reported.success === true && (reported.network === offer.network || reported.network === eip155)
+    if (!offer || op.data.beforeBlock === undefined || !op.data.typedData) return false;
+    const usable = reported?.success === true && (reported.network === offer.network || reported.network === eip155)
       && (reported.payer === undefined || same(reported.payer, row.address))
-      && /^0x[0-9a-fA-F]{64}$/.test(reported.transaction), 'invalid_merchant_receipt');
-    let r; try { r = await client.waitForTransactionReceipt({ hash: reported.transaction, confirmations: 2, timeout: 30000 }); } catch { return false; }
-    check(same(r.transactionHash, reported.transaction) && r.status === 'success' && r.blockNumber >= BigInt(op.data.beforeBlock), 'settlement_receipt_invalid');
-    const transfers = parseEventLogs({ abi, eventName: 'Transfer', logs: r.logs }).filter(e => same(e.address, offer.asset) && same(e.args.from, row.address));
-    const value = transfers[0]?.args.value, ceiling = BigInt(offer.amount);
-    check(transfers.length === 1 && same(transfers[0].args.to, offer.payTo)
-      && (offer.scheme === 'upto' ? value > 0n && value <= ceiling : value === ceiling), 'settlement_transfer_mismatch');
-    check(await nonceUsed({ offer, typedData: op.data.typedData, safe: row.address, readContract, blockNumber: r.blockNumber }) === true, 'settlement_nonce_unused');
-    op.data.result = { ...(op.data.result || {}), settlement: 'verified', transaction: r.transactionHash, blockNumber: String(r.blockNumber),
-      amountSettledUnits: String(value), contentDelivered: !!op.data.contentDelivered };
-    delete op.data.reason; save(op, 'paid'); return true;
+      && /^0x[0-9a-fA-F]{64}$/.test(reported.transaction);
+    const ceiling = BigInt(offer.amount);
+    const matchesAmount = value => offer.scheme === 'upto' ? value > 0n && value <= ceiling : value === ceiling;
+    async function confirm(hash, discovered = false) {
+      let r; try { r = await client.waitForTransactionReceipt({ hash, confirmations: 2, timeout: 30000 }); } catch { return false; }
+      check(same(r.transactionHash, hash) && r.status === 'success' && r.blockNumber >= BigInt(op.data.beforeBlock), 'settlement_receipt_invalid');
+      const transfers = parseEventLogs({ abi, eventName: 'Transfer', logs: r.logs }).filter(e => same(e.address, offer.asset) && same(e.args.from, row.address));
+      const value = transfers[0]?.args.value;
+      check(transfers.length === 1 && same(transfers[0].args.to, offer.payTo) && matchesAmount(value), 'settlement_transfer_mismatch');
+      const used = blockNumber => nonceUsed({ offer, typedData: op.data.typedData, safe: row.address, readContract, blockNumber });
+      check(await used(r.blockNumber) === true, 'settlement_nonce_unused');
+      if (discovered) {
+        const authorizations = parseEventLogs({ abi: authorizationAbi, eventName: 'AuthorizationUsed', logs: r.logs }).filter(e => same(e.address, offer.asset));
+        // Bind discovery to THIS authorization, not another equal payment by the same Safe.
+        if (op.data.typedData.primaryType === 'TransferWithAuthorization' && authorizations.length) {
+          check(authorizations.some(e => same(e.args.authorizer, row.address) && same(e.args.nonce, op.data.typedData.message.nonce)), 'settlement_nonce_mismatch');
+        } else {
+          const td = op.data.typedData, tx = await client.getTransaction({ hash });
+          const eip3009 = td.primaryType === 'TransferWithAuthorization';
+          const callAbi = eip3009 ? parseAbi([
+            'function transferWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce,bytes signature)',
+            'function receiveWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce,bytes signature)',
+            'function transferWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce,uint8 v,bytes32 r,bytes32 s)',
+            'function receiveWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce,uint8 v,bytes32 r,bytes32 s)',
+          ]) : offer.scheme === 'upto' ? x402UptoPermit2ProxyABI : x402ExactPermit2ProxyABI;
+          const decoded = decodeFunctionData({ abi: callAbi, data: tx.input });
+          if (eip3009) check(same(tx.to, offer.asset) && same(decoded.args[0], row.address)
+            && same(decoded.args[5], td.message.nonce), 'settlement_nonce_mismatch');
+          else {
+            check(td.primaryType === 'PermitWitnessTransferFrom' && ['settle', 'settleWithPermit'].includes(decoded.functionName)
+              && same(tx.to, td.message.spender), 'settlement_nonce_mismatch');
+            const args = decoded.functionName === 'settleWithPermit' ? decoded.args.slice(1) : decoded.args;
+            const owner = offer.scheme === 'upto' ? args[2] : args[1];
+            check(same(owner, row.address) && BigInt(args[0].nonce) === BigInt(td.message.nonce), 'settlement_nonce_mismatch');
+          }
+          check(await used(r.blockNumber - 1n) === false, 'settlement_nonce_already_used');
+        }
+      }
+      op.data.result = { ...(op.data.result || {}), settlement: discovered ? 'chain_discovered' : 'verified', transaction: r.transactionHash, blockNumber: String(r.blockNumber),
+        amountSettledUnits: String(value), contentDelivered: !!op.data.contentDelivered };
+      delete op.data.reason; save(op, 'paid'); return true;
+    }
+    if (usable) { try { if (await confirm(reported.transaction)) return true; } catch { /* An unusable merchant receipt is not the only source of evidence. */ } }
+    const latest = await client.getBlockNumber({ cacheTime: 0 });
+    // Bounded RPC ranges also let old, interrupted requests reconcile without a giant getLogs.
+    for (let fromBlock = BigInt(op.data.beforeBlock); fromBlock <= latest; fromBlock += 2000n) {
+      const toBlock = fromBlock + 1999n < latest ? fromBlock + 1999n : latest;
+      const logs = await client.getLogs({ address: offer.asset, event: abi.find(e => e.name === 'Transfer'),
+        args: { from: row.address, to: offer.payTo }, fromBlock, toBlock, strict: true });
+      for (const hash of new Set(logs.filter(e => !e.removed && matchesAmount(e.args.value)).map(e => e.transactionHash))) {
+        try { if (await confirm(hash, true)) return true; } catch { /* Other transfers are not evidence for this authorization. */ }
+      }
+    }
+    return false;
   }
   // The unpaid request, the 402 challenge and the offer the Safe would pay. Shared by pay and dry_run.
   async function challenge({ url, shape, requestId, prefer, maxAmountUnits }) {
@@ -1013,7 +1057,7 @@ export function createKernelRuntime({ path, store, env = process.env, chainId = 
           // D-SAFE-EOA-RELAY: an interrupted relay is finished from the ledger (settlement proven, or after
           // validBefore the funded amount goes back to the Safe). Never re-funds, never re-signs.
           if (kind === 'pay' && op.data.relay) await finishRelayOp(op, row, keys);
-          else if (kind === 'pay' && op.data.paymentReceipt) await (op.data.offer?.protocol === 'mpp' ? verifyMpp(op) : verifyPayment(op));
+          else if (kind === 'pay' && (op.data.paymentReceipt || (op.data.offer && op.data.typedData))) await (op.data.offer?.protocol === 'mpp' ? verifyMpp(op) : verifyPayment(op));
           // A permit2 authorization whose deadline has passed is cryptographically
           // dead: it can never settle on-chain, so the request cannot be paid twice.
           // Marking it failed here (never 'paid') unblocks a NEW request.
