@@ -33,8 +33,9 @@ export async function mergeIntoFirst({ agentWallet, opRequestId, unitsToDecimal 
 // no longer mints a guest wallet for every "hi" — it answers the plain connect link. A new wallet
 // comes only with new: true; a person who already has one keeps their first (resolveWallet).
 // No link in this answer (owner 2026-09-28): with a link in it, models just showed the link and never asked.
+// Live 2026-10-28: "new or existing?" made agents ask back what the person already said, so name the call.
 export async function askFirst() {
-  return { ok: true, status: "done", next: "Have a session? Resend with it. Else ask: new or existing?" };
+  return { ok: true, status: "done", next: `For an instant wallet, call wallet {action:"balance", new:true} with no wallet_key and no session; no signup. After the first answer, always send wallet_key.` };
 }
 
 // A wallet_key from an older chat can open a wallet that is not the person's first one. With the

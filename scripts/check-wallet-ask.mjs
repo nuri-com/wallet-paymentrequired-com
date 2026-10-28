@@ -49,9 +49,10 @@ mock.module('../src/agent-kernel-wallet.mjs', { namedExports: { ...kernel,
 mock.module('../src/privy-agent-app-signer.mjs', { namedExports: { ...privy, connectedSafeAgentSigner: async () => ({ address: SAFE }) } });
 mock.module('../src/safe-pay-relay.mjs', { namedExports: { ...relay, safeSignatureAccepted: async () => true } });
 const { createKernelRuntime } = await import('../src/agent-kernel-runtime.mjs');
-const { createMcpWalletTool, ASK_URL, ASK_MODELS } = await import('../src/mcp-wallet-tool.mjs');
+const { createMcpWalletTool, WALLET_TOOL, ASK_URL, ASK_MODELS } = await import('../src/mcp-wallet-tool.mjs');
 const { decimalToUnits } = await import('../src/wallet-units.mjs');
 const { instructions } = await import('../src/mcp-instructions.mjs');
+const { askFirst } = await import('../src/mcp-wallet-merge.mjs');
 
 async function fakeRouter(url, headers, onHeaders, shape) {
   assert.equal(url, ASK_URL);
@@ -169,6 +170,25 @@ try {
   assert.equal(refused.ok, false);
   assert.match(refused.error, /send again with a NEW request_id and a higher max_amount/);
   assert.ok(instructions(['wallet']).includes('NEW request_id and a higher max_amount'));
+  // Live 2026-10-28: creation refusals are not payment retries. A duplicate reason key at the
+  // payment block silently replaced the creation text with "same request_id" advice, and creation
+  // has no request ID to reuse. Schema and bare-balance answer must name the instant first call.
+  const toolSource = readFileSync(new URL('../src/mcp-wallet-tool.mjs', import.meta.url), 'utf8');
+  assert.equal(toolSource.split('operator_admission_budget_exhausted:').length - 1, 1, 'Reason key must be mapped once');
+  const admission = toolSource.split('\n').find(line => line.includes('operator_admission_budget_exhausted:'));
+  assert.match(admission, /No new wallet can be opened right now/);
+  assert.doesNotMatch(admission, /request_id/);
+  const instant = 'call balance with new:true and no wallet_key or session';
+  assert.ok(WALLET_TOOL.description.includes(instant), 'Tool description must name the instant first call');
+  assert.match(WALLET_TOOL.description, /After the first answer, always send wallet_key/);
+  assert.match(WALLET_TOOL.inputSchema.properties.new.description, /First call only/);
+  assert.match(WALLET_TOOL.inputSchema.properties.action.description, /new:true it opens an instant wallet/);
+  assert.match(WALLET_TOOL.inputSchema.properties.wallet_key.description, /Not needed on the first call/);
+  const bare = await askFirst();
+  assert.ok(bare.next.includes('call wallet {action:"balance", new:true}'), bare.next);
+  assert.match(bare.next, /no wallet_key and no session; no signup/);
+  assert.match(bare.next, /After the first answer, always send wallet_key/);
+  assert.doesNotMatch(bare.next, /new or existing/);
   assert.equal(state.payments, 1);
   assert.equal(state.signatures, 1, 'Over-cap invoice must be rejected before signing');
   const failed = runtime.history(row.id).find(op => op.reason === 'payment_exceeds_max_amount');

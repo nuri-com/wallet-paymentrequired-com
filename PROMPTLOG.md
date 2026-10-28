@@ -1,5 +1,9 @@
 # Prompt log
 
+## 2026-10-28 — Emin via Hermes parent; implementer Hermes worker
+
+- "The first live instant-wallet call failed with payment retry advice and tools-only models asked new/existing; fix the duplicate reason key and make the schema name the instant first call." Diagnosis `wallet-agent-diagnosis/VERDICT.md` at live SHA `9513a44339cd`; mechanical text only, no `create` action, no auto-create, no custody or capacity change.
+
 
 ## 2026-10-17 — Emin; recorded by Hermes
 
