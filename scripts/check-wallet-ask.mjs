@@ -16,11 +16,16 @@ const SELLER = '0x2222222222222222222222222222222222222222';
 const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 const KEY = 'A'.repeat(44); // Synthetic, never usable as a real wallet credential.
 assert.equal(KEY.length, 44);
-const state = { signatures: 0, payments: 0, calls: [], invoices: new Map(), nonces: new Set(), receipts: new Map(), loseBody: false, badAnswer: false, recovery402: false };
+const state = { signatures: 0, payments: 0, calls: [], invoices: new Map(), nonces: new Set(), receipts: new Map(), loseBody: false, badAnswer: false, recovery402: false, block: 100n, noReceipt: false, wrongNonce: false, badTransfer: null };
 globalThis.fetch = async () => { throw new Error('Unexpected network access in offline ask check'); };
 mock.module('viem', { namedExports: { ...viem, createPublicClient: () => ({
   getChainId: async () => 8453,
-  getBlockNumber: async () => 100n,
+  getBlockNumber: async () => state.block,
+  getLogs: async ({ address, args, fromBlock, toBlock }) => {
+    assert.equal(address, USDC); assert.deepEqual(args, { from: SAFE, to: SELLER });
+    return [...state.receipts.values()].filter(r => r.blockNumber >= fromBlock && r.blockNumber <= toBlock)
+      .map(r => ({ transactionHash: r.transactionHash, args: { value: 2070n }, removed: false }));
+  },
   getCode: async () => '0x01',
   readContract: async ({ functionName, args }) => {
     if (functionName === 'balanceOf') return 1000000n;
@@ -28,7 +33,9 @@ mock.module('viem', { namedExports: { ...viem, createPublicClient: () => ({
     if (functionName === 'authorizationState') return state.nonces.has(args[1]);
     throw new Error(`Unexpected fake RPC: ${functionName}`);
   },
-  waitForTransactionReceipt: async ({ hash }) => {
+  getTransaction: async ({ hash }) => state.receipts.get(hash).transaction,
+  waitForTransactionReceipt: async ({ hash, confirmations }) => {
+    assert.equal(confirmations, 2);
     assert.ok(state.receipts.has(hash), 'Only known synthetic settlements may confirm');
     return state.receipts.get(hash);
   },
@@ -73,11 +80,22 @@ async function fakeRouter(url, headers, onHeaders, shape) {
     state.payments++;
     const tx = `0x${state.payments.toString(16).padStart(64, '0')}`;
     invoice.receipt = { success: true, network: 'eip155:8453', transaction: tx, payer: SAFE };
-    state.receipts.set(tx, { transactionHash: tx, status: 'success', blockNumber: 101n, logs: [{
+    state.block += 2n;
+    state.receipts.set(tx, { transactionHash: tx, status: 'success', blockNumber: state.block, logs: [{
+      address: state.badTransfer === 'asset' ? SELLER : USDC,
+      topics: viem.encodeEventTopics({ abi: viem.parseAbi(['event Transfer(address indexed from,address indexed to,uint256 value)']), eventName: 'Transfer', args: { from: SAFE, to: state.badTransfer === 'to' ? SAFE : SELLER } }),
+      data: viem.encodeAbiParameters([{ type: 'uint256' }], [state.badTransfer === 'amount' ? 2071n : 2070n]),
+    }, {
       address: USDC,
-      topics: viem.encodeEventTopics({ abi: viem.parseAbi(['event Transfer(address indexed from,address indexed to,uint256 value)']), eventName: 'Transfer', args: { from: SAFE, to: SELLER } }),
-      data: viem.encodeAbiParameters([{ type: 'uint256' }], [2070n]),
+      topics: viem.encodeEventTopics({ abi: viem.parseAbi(['event AuthorizationUsed(address indexed authorizer,bytes32 indexed nonce)']), eventName: 'AuthorizationUsed',
+        args: { authorizer: SAFE, nonce: state.wrongNonce ? `0x${'ff'.repeat(32)}` : payment.payload.authorization.nonce } }), data: '0x',
     }] });
+    if (state.badTransfer === 'missing-event-unrelated-tx') {
+      const receipt = state.receipts.get(tx);
+      receipt.logs.pop();
+      receipt.transaction = { to: USDC, input: viem.encodeFunctionData({
+        abi: viem.parseAbi(['function transfer(address,uint256) returns(bool)']), functionName: 'transfer', args: [SELLER, 2070n] }) };
+    }
   }
   if (!invoice.paid || (!signature && state.recovery402)) {
     const required = { x402Version: 2, resource: { url: `${ASK_URL}?invoice=${id}`, mimeType: 'application/json' }, accepts: [{
@@ -86,7 +104,7 @@ async function fakeRouter(url, headers, onHeaders, shape) {
     }] };
     return { status: 402, headers: { 'payment-required': Buffer.from(JSON.stringify(required)).toString('base64') }, bytes: Buffer.from('{}') };
   }
-  const responseHeaders = { 'content-type': 'application/json', 'payment-response': Buffer.from(JSON.stringify(invoice.receipt)).toString('base64') };
+  const responseHeaders = { 'content-type': 'application/json', ...(!state.noReceipt ? { 'payment-response': Buffer.from(JSON.stringify(invoice.receipt)).toString('base64') } : {}) };
   onHeaders?.(200, responseHeaders);
   if (signature && state.loseBody) { state.loseBody = false; throw new Error('Synthetic disconnect after settlement headers'); }
   return { status: 200, headers: responseHeaders, bytes: Buffer.from(JSON.stringify(invoice.answer)) };
@@ -192,6 +210,32 @@ try {
   assert.match(empty.error, /no answer/);
   assert.ok(empty.receipt);
   assert.deepEqual(await tool.call(emptyArgs), empty);
+  state.noReceipt = true; state.badAnswer = false;
+  const pay = { action: 'pay', wallet_key: KEY, url: ASK_URL, method: 'POST',
+    body: { messages: [{ role: 'user', content: 'Receipt-free payment' }], model: ASK_MODELS.fast, stream: false }, max_amount: '0.05' };
+  const discovered = await tool.call({ ...pay, request_id: 'receipt-free' });
+  assert.equal(discovered.status, 'done', JSON.stringify(discovered));
+  assert.ok(runtime.history(row.id).some(op => op.status === 'paid' && op.settlement === 'chain_discovered'));
+  const count = state.payments;
+  tool.close(); tool = openTool();
+  assert.deepEqual(await tool.call({ ...pay, request_id: 'receipt-free' }), discovered);
+  assert.equal(state.payments, count, 'Discovered settlement is durable; replay never repays');
+  for (const mismatch of ['nonce', 'missing-event-unrelated-tx', 'asset', 'to', 'amount']) {
+    state.wrongNonce = mismatch === 'nonce'; state.badTransfer = mismatch;
+    const unverified = await tool.call({ ...pay, request_id: `receipt-free-wrong-${mismatch}` });
+    assert.equal(unverified.status, 'delivered_unverified', JSON.stringify(unverified));
+    assert.ok(unverified.resource); assert.match(unverified.next, /settlement is not confirmed/);
+    assert.ok(runtime.history(row.id).some(op => op.status === 'unknown' && op.reason === 'settlement_unconfirmed'));
+    // Supply the missing evidence and reconcile the same request before another spend.
+    const receipt = [...state.receipts.values()].at(-1);
+    receipt.logs[0] = { ...receipt.logs[0], address: USDC,
+      topics: viem.encodeEventTopics({ abi: viem.parseAbi(['event Transfer(address indexed from,address indexed to,uint256 value)']), eventName: 'Transfer', args: { from: SAFE, to: SELLER } }),
+      data: viem.encodeAbiParameters([{ type: 'uint256' }], [2070n]) };
+    const authorization = JSON.parse(Buffer.from(state.calls.at(-1).headers['PAYMENT-SIGNATURE'], 'base64').toString()).payload.authorization;
+    receipt.logs[1] = { address: USDC, data: '0x', topics: viem.encodeEventTopics({ abi: viem.parseAbi(['event AuthorizationUsed(address indexed authorizer,bytes32 indexed nonce)']), eventName: 'AuthorizationUsed', args: { authorizer: SAFE, nonce: authorization.nonce } }) };
+    assert.equal((await tool.call({ ...pay, request_id: `receipt-free-wrong-${mismatch}` })).status, 'done');
+  }
+  console.log('settlement fallback ok: receipt-free -> chain_discovered/paid; durable replay; wrong nonce/asset/payTo/amount stay unknown and surface delivered_unverified content; 2 confirmations required');
   console.log(`wallet ask ok: 402 -> signed 200; ${state.payments} synthetic payments; cap rejects before signing; new-id higher-cap retry; durable replay; fast/smart; lost-body recovery without payment; validation and malformed answer`);
   const runtimeSource = readFileSync(new URL('../src/agent-kernel-runtime.mjs', import.meta.url), 'utf8');
   assert.ok(runtimeSource.includes('url === ROUTER_CHAT_URL ? 190000 : 20000'), 'Router receives a generation-sized bounded timeout');
