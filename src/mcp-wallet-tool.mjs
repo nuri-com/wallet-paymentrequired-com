@@ -88,7 +88,6 @@ const REASON_SENTENCE = {
   relay_authorization_still_live: "The payment is not finished yet and can still go through. Try again in a few minutes with the same request_id, not a new one.",
   batch_settlement_not_in_runtime: "This link only takes batch payments, which the wallet cannot pay. Nothing was paid.",
   operator_gas_budget_exhausted: "The wallet service cannot pay the network fee right now. Try again later with the same request_id.",
-  operator_admission_budget_exhausted: "The wallet service cannot pay the network fee right now. Try again later with the same request_id.",
   operator_balance_insufficient: "The wallet service cannot pay the network fee right now. Try again later with the same request_id.",
   operator_owner_exit_balance_required: "The wallet service cannot pay the network fee right now. Try again later with the same request_id.",
   operator_transaction_reverted: "A step on the chain failed. Try again later with the same request_id.",
@@ -121,13 +120,13 @@ export const WALLET_TOOL = {
   name: "wallet",
   // Live bench 2026-10-17: "Your wallet" pulled small models here for the person's bank balance and swaps.
   title: "The agent's own USDC wallet",
-  description: "The AGENT's own USDC wallet, not the person's bank: balance, fund, pay paid APIs, ask AI (prompt, max_amount), send USDC, discover, history, bridge. The person's euros and cards are the bank tool. Send wallet_key always.",
+  description: "The AGENT's own USDC wallet, not the person's bank: balance, fund, pay paid APIs, ask AI (prompt, max_amount), send USDC, discover, history, bridge. The person's euros and cards are the bank tool. For an instant wallet, call balance with new:true and no wallet_key or session; no signup. After the first answer, always send wallet_key.",
   inputSchema: {
     type: "object", additionalProperties: false, required: ["action"],
     allOf: [{ if: { properties: { action: { const: "ask" } } }, then: { required: ["wallet_key", "prompt", "max_amount", "request_id"] } }],
     properties: {
-      action: { type: "string", enum: ["balance", "fund", "pay", "ask", "send", "history", "bridge", "discover"], description: "balance: money and address. fund: add money (amount). pay: paid link. ask: AI answer (session or wallet_key, prompt, max_amount, request_id; quality fast or smart). send: USDC to 0x. discover: paid APIs. history: past payments. bridge: move USDC to another blockchain; never a currency swap." },
-      wallet_key: { type: "string", pattern: TOKEN.source, description: "From the first answer. Send always." },
+      action: { type: "string", enum: ["balance", "fund", "pay", "ask", "send", "history", "bridge", "discover"], description: "balance: money and address; with new:true it opens an instant wallet on the first call (no wallet_key, no session, no signup). fund: add money (amount). pay: paid link. ask: AI answer (session or wallet_key, prompt, max_amount, request_id; quality fast or smart). send: USDC to 0x. discover: paid APIs. history: past payments. bridge: move USDC to another blockchain; never a currency swap." },
+      wallet_key: { type: "string", pattern: TOKEN.source, description: "Send always after the first answer. Not needed on the first call with new:true." },
       session: { type: "string", pattern: SESSION_PATTERN, description: "From connect. Send it on every call." },
       url: { type: "string", maxLength: 4096, description: "For pay: the paid link." },
       to: { type: "string", pattern: "^0x[0-9a-fA-F]{40}$", description: "For send: 0x address. To pay the person back into their bank account, use address from bank iban." },
@@ -138,7 +137,7 @@ export const WALLET_TOOL = {
       method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"], description: "For pay: HTTP method (default GET)." },
       body: { description: "For pay: request body." },
       request_id: { type: "string", minLength: 1, maxLength: 64, description: "Your label for this operation. Required for ask. Repeat unchanged to continue; after an over-cap invoice, use a NEW request_id and a higher max_amount." },
-      new: { type: "boolean", description: "true makes a new wallet." },
+      new: { type: "boolean", description: "First call only: true on balance opens an instant wallet, with no wallet_key and no session; no signup." },
       chain: { type: "string", description: "base (default), ethereum, arbitrum, optimism, polygon." },
       query: { type: "string", minLength: 1, maxLength: 120, description: "For discover: keywords." },
       limit: { type: "integer", minimum: 1, maximum: 25, description: "For discover: max results (default 10)." },

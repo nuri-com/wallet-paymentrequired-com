@@ -5,6 +5,13 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — instant-wallet first-call wording (2026-10-28)
+
+- Remove the duplicate `operator_admission_budget_exhausted` reason key: the later payment text ("same request_id") overwrote the creation text, and a new inner wallet creation has no request id to repeat (live 2026-10-28, `src/mcp-wallet-tool.mjs:81`, `:91`).
+- Tool description, `balance` action, `new` and `wallet_key` now state the instant first call: `balance` with `new:true`, no `wallet_key`, no session, no signup; `wallet_key` always only after the first answer (`src/mcp-wallet-tool.mjs:124,129-130,141`).
+- Bare `balance` (`askFirst`) names that exact call instead of asking "new or existing?" (`src/mcp-wallet-merge.mjs:36-37`).
+- `scripts/check-wallet-ask.mjs` asserts the single reason mapping, the creation-correct sentence without `request_id`, and the instant-call wording in schema and bare answer.
+
 ## Unreleased — wallet ask with session (2026-10-18)
 
 - wallet ask accepts the person's session as well as a wallet_key, like pay does (live 2026-10-18: a connected person got 'Ask needs wallet_key').
