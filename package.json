@@ -10,12 +10,16 @@
     "precheck": "for f in src/*.mjs public/short-link.mjs; do node --check \"$f\" || exit 1; done",
     "check": "npm run precheck && node scripts/check-import-closure.mjs",
     "check:ask": "node --experimental-test-module-mocks scripts/check-wallet-ask.mjs",
-    "check:ask:regression": "node scripts/check-wallet-ask-regression.mjs"
+    "check:ask:regression": "node scripts/check-wallet-ask-regression.mjs",
+    "check:prf": "node scripts/check-prf-arkade-v2.mjs"
   },
   "engines": {
     "node": ">=22"
   },
   "dependencies": {
+    "@arkade-os/sdk": "0.5.8",
+    "@arkade-os/swap": "0.1.8",
+    "@noble/ciphers": "1.2.1",
     "@privy-io/node": "0.33.0",
     "@x402/core": "2.23.0",
     "@x402/evm": "2.23.0",
@@ -24,8 +28,10 @@
     "@zerodev/sdk": "5.5.7",
     "ethers": "^6.16.0",
     "mppx": "0.8.19",
+    "nostr-tools": "2.24.1",
     "ox": "0.14.33",
-    "viem": "2.56.0"
+    "viem": "2.56.0",
+    "ws": "8.21.3"
   },
   "devDependencies": {
     "@privy-io/react-auth": "3.38.0",

@@ -1,0 +1,58 @@
+{
+  "prf_hex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+  "main_eth_user_eoa": "0xF70228B3978473112618732c96380Fcdb35a0701",
+  "main_client_pk33": "02e8a90564a7e51c98663a058345b6a0d563f3c6c4f078f40eafb50ee5e37f21a8",
+  "slot0": {
+    "public": {
+      "derivation_version": "nuri-agent-wallet-v1",
+      "index": 0,
+      "agent_eth_eoa": "0xFDD0eD97c09575a78cfEBcfb1C33c2fed757951c",
+      "agent_eth_public_key_33_hex": "02a222832c184217ad7ea00ddeb96c765fbc8ebf791e226b92ae4869be00545aa1",
+      "agent_btc_public_key_33_hex": "02b680afa5e2d1624f6d205a9f1cfd728709e28491a8c866d538eede9bba383dbf",
+      "agent_btc_xonly_pubkey_hex": "b680afa5e2d1624f6d205a9f1cfd728709e28491a8c866d538eede9bba383dbf",
+      "agent_btc_taproot_address": "bc1pq7ysmft44p20zhetv78cgukhhzvp798g0mfpxej9fumlnlljsu3sxvhqw8"
+    },
+    "eth_sk_hex": "a84be43865a72d3d9e171556853f6d305ba26ab1b36417645111d1a76399daaf",
+    "btc_sk_hex": "118b77752f5b00ca5e46a5d2a92f788a156f2acd802ca49bbe2e20667dcff4dd"
+  },
+  "slot1": {
+    "public": {
+      "derivation_version": "nuri-agent-wallet-v1",
+      "index": 1,
+      "agent_eth_eoa": "0xBB814a337bEED15edb56882F31f4772aB066A1f1",
+      "agent_eth_public_key_33_hex": "0245229f2ac7c682d0929fdf9e39721f1a92fb433afea39d773b6a476dcbf40aec",
+      "agent_btc_public_key_33_hex": "02b6931ca220319870c751d8b6a6b3cb928f35cfeb0188081eb18cbd2eeec42937",
+      "agent_btc_xonly_pubkey_hex": "b6931ca220319870c751d8b6a6b3cb928f35cfeb0188081eb18cbd2eeec42937",
+      "agent_btc_taproot_address": "bc1pafr6heu8a0gdw7q5twwek2twffrk2wv33v7fsd9fuz85emnjsk0qwtkjrc"
+    },
+    "eth_sk_hex": "cfe6fdd1d63c107a71a95311a385205d618dd75a56e6106cc1a1ff1d783c0622",
+    "btc_sk_hex": "6c04e29b43abb32dcd91efcff525f0e3eaee62d1dfa539b311c4144b19e8e618"
+  },
+  "reply_sk_hex": "0707070707070707070707070707070707070707070707070707070707070707",
+  "reply_pubkey": "989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f",
+  "ephemeral_sk_hex": "0909090909090909090909090909090909090909090909090909090909090909",
+  "nonce_hex": "202122232425262728292a2b2c2d2e2f3031323334353637",
+  "session_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "encrypted": {
+    "ephemeral_pubkey": "56b328b30c8bf5839e24058747879408bdb36241dc9c2e7c619faa12b2920967",
+    "nonce_b64u": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3",
+    "ciphertext_b64u": "60hposwYtCVjGeB3ANvCrAvKV0hWM9LjLAc16HqSKihu5LcGflQd6MGJcg1ZNuAkwOy48slaNSN0EfJWnjrWa1dsbsiwVDx19z5gZZ9LGxFn8Jv7b3abCHoUBzA7OlxlGXT5dQpGMx_bxAfT7RiXGVJTTKTcIeMf1Q0GzGKTeN0xQIYb2_eW2DylA-PW8anuNGHSCNHEOJ_zCVl_LqVQh8sDMrdaABjkNza9kYsoT2A9OftqcgbXDadTb79CYcpSd3_PBXQja7pst9KKrs0fvHYMh2JFtQKvsWuX8defJkLFhqkyLfB85iPc6QT5FsCUNGxONYcNjxqfIZezq2nxnGMaVMSAXzYa1332z2662bA9JWHAmrB34CZDbKeyk6y30tDiOPri5IhgnEWcDIovgVVwKVgzBLtUAhRv54blNytM2SRMdEkbYq9TN5Wpxyknz7AzpCLp5cbaFs4_VpD4R5f5POe8qcnOorUsMfHI3UKw8QX0NcPXWkq4t5O0pR-_YV1Y3jT1i1Zdyyc72hP5Ig4Azm3-UmZywc1oLw_USZCc6YfF0pJKnxwpruJVBBNoIWG7VVxjneWY3IE7yoketrYgP_RgXogV7AzQnw4SVwbAlKpV0zk_Vv6VGsZW3K-2tsyP-CHV-LUMhUrPKTVqOKkRhE1pjyjwVOJHKiWFOb4512c4ODRAh9WBhkK9pR56aIbcGMn1sLd15iqC3_c2i-0Y7RvT0wp31Y2RJYlDP23swaRCaHnOEE3ZBx0Vtiwqz2uOclKHSTe7xcFmq2uQbRNw3BpwYlu15CQax2Ut-bAu2jPOXE5IKfp2mW20P_n9nhC9-UHfJwocYhuVVf7pG8vKWuNrOSYTzROkmSMb4Yb3f84buL7Pj3x57H-7VVAqW0aCQtGuTS1RI5e0n1DN4vS740JcZPpXr9dbiJdajmwr4ubw4eDXXK9Qf2NBMMTk2_lwkJWzJwgB9hZlbQcHYXB8bG2CNu8gx-Wp9HIO098fH8qvk05wwrhNM1qmAV1aj47Wzgjct5l-nFCm85r-j3I7ywcRyMI8J9jgBWidCq7vhe7UXPphezwqqciuyyepNo_y3U9VNkCytNNJ_yPl8xoFGBU1La4BG8FHlp0sAiGcZFIMu4cQkNQsayswAb-GFQ8PkSS4xggpYBLKEdyRrLXwID1E1VUsVyHGILU4JOazF2JxCm2CwkEWLH5sME_aI5oa78JGEWHU0EpV-4OPUGwqbgxW5uFGveUxTGU",
+    "agent_public": {
+      "derivation_version": "nuri-agent-wallet-v1",
+      "index": 0,
+      "agent_eth_eoa": "0xFDD0eD97c09575a78cfEBcfb1C33c2fed757951c",
+      "agent_eth_public_key_33_hex": "02a222832c184217ad7ea00ddeb96c765fbc8ebf791e226b92ae4869be00545aa1",
+      "agent_btc_public_key_33_hex": "02b680afa5e2d1624f6d205a9f1cfd728709e28491a8c866d538eede9bba383dbf",
+      "agent_btc_xonly_pubkey_hex": "b680afa5e2d1624f6d205a9f1cfd728709e28491a8c866d538eede9bba383dbf",
+      "agent_btc_taproot_address": "bc1pq7ysmft44p20zhetv78cgukhhzvp798g0mfpxej9fumlnlljsu3sxvhqw8"
+    },
+    "policy": {
+      "max_per_tx_usdc": "25",
+      "daily_limit_usdc": "100",
+      "max_per_tx_sats": 25000,
+      "daily_limit_sats": 100000,
+      "label": "Claude MCP"
+    }
+  },
+  "proof_message": "Nuri agent wallet grant v1\nSession: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\nIndex: 0\nAgent EVM EOA: 0xFDD0eD97c09575a78cfEBcfb1C33c2fed757951c\nAgent BTC Pubkey: 02b680afa5e2d1624f6d205a9f1cfd728709e28491a8c866d538eede9bba383dbf\nReply Pubkey: 989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f\nEphemeral Pubkey: 56b328b30c8bf5839e24058747879408bdb36241dc9c2e7c619faa12b2920967\nPolicy: {\"max_per_tx_usdc\":\"25\",\"daily_limit_usdc\":\"100\",\"max_per_tx_sats\":25000,\"daily_limit_sats\":100000,\"label\":\"Claude MCP\"}\nCiphertext SHA-256: 60cb09e025dfda032584e54998fb22af519b205cde217b7dc95d296a5bfd09ae"
+}

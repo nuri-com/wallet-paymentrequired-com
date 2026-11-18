@@ -48,6 +48,12 @@ records are in `AGENT_STORE_PATH` (`src/privy-agent-app-signer.mjs:93`).
 | wallet_connected_funds | `src/mcp-wallet-fund-connected.mjs:66` |
 | agent_spend_events, spend_policy, spend_policy_requests (`safe:<address>` keys) | `src/spend-policy.mjs:63-79` |
 | tool_charges | `src/tool-prices.mjs:109` |
+| nuri_prf_grant_sessions, nuri_prf_agent_wallets, nuri_prf_lightning_receives, nuri_prf_agent_ops | `src/prf-agent-wallet-store.mjs` (v2 Passkey PRF + Safe + Arkade/Lightning) |
+
+See [`docs/CUSTODY-EVOLUTION.md`](docs/CUSTODY-EVOLUTION.md) for the complete v1 (`Privy + ZeroDev`)
+to v2 (`Nuri Passkey PRF + nuri-agent-cosigner`) custody comparison, and
+[`docs/AGENT-DERIVATION-SPEC.md`](docs/AGENT-DERIVATION-SPEC.md) for the frozen derivation strings,
+2-of-4 Safe `CREATE2` prediction, and 3-leaf Arkade server-decay Tapscript specification.
 
 **Chain sidecars.** For every payable chain other than the home chain, the Safe ledger opens a
 separate file named `${SHORT_LINKS_DB}.chain-<chainId>` (`src/mcp-agent-wallet.mjs:222-226`).

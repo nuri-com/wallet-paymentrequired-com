@@ -5,8 +5,8 @@ const APEX = "https://paymentrequired.com";
 const ROLES = {
   wallet: {
     title: "Wallet for AI agents",
-    purpose: "This is the wallet service of paymentrequired.com. It runs the <code>wallet</code> tool: balance, fund, pay, send, history, bridge and discover. The agent Safe pays x402 services from here; you connect it with one Privy sign-in through the link your agent gives you.",
-    here: "This origin serves the approval pages your agent links you to (<code>/bridge/privy</code>) and short links (<code>/s</code>). There is nothing to click here without such a link.",
+    purpose: "This is the wallet service of paymentrequired.com. It runs the 4-action <code>wallet</code> tool (<code>balance</code>, <code>receive</code>, <code>pay</code>, <code>history</code>) over Base USDC (2-of-4 Safe: x402 &amp; EVM MPP) and Bitcoin Lightning/Arkade (2-of-2 Arkade + Arkade Intents: L402, Lightning MPP, BOLT11), onboarded via Nuri Passkey PRF on <code>connect.nuri.com</code> while keeping existing Privy v1 wallets live.",
+    here: "New agent wallets approve once on <code>connect.nuri.com</code>; legacy approval pages (<code>/bridge/privy</code>) and short links (<code>/s</code>) remain served here.",
   },
   banking: {
     title: "Card and euro account for AI agents",

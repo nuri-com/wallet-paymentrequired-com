@@ -13,6 +13,8 @@ import { canonicalKyc, sddVerificationStatus } from "./mcp-account.mjs";
 import { fundFromConnectedWallet } from "./mcp-wallet-fund-connected.mjs";
 import { fundFromReserve } from "./mcp-wallet-fund-reserve.mjs";
 import { mintConnectApproval, connectRequiredMessage } from "./mcp-connection.mjs"; import { mergeIntoFirst, askFirst, notYourWallet } from "./mcp-wallet-merge.mjs"; import { logEvent } from "./log.mjs";
+import { createPrfWalletCoordinator } from "./mcp-wallet-prf-v2.mjs";
+import { PRF_WALLET_KEY_RE, isPrfWalletKey } from "./prf-agent-wallet-store.mjs";
 
 // The 4-tool simplification's `wallet` tool (issue #166, DECISIONS.md D-C/D-D).
 // Thin wrapper over the existing agent wallet machinery (mcp-agent-wallet.mjs,
@@ -20,9 +22,9 @@ import { mintConnectApproval, connectRequiredMessage } from "./mcp-connection.mj
 // it does not rewrite that machinery. Model-facing strings stay free of
 // protocol internals; errors are one plain sentence plus the next action.
 
-// wallet_key: 44 = guest LLM key, 66 = connected LLM key (EOA-derived, handed over once at connect), both one half of
-// the Privy 2-of-2 held by the LLM, never by the server (D-CUSTODY-V2). No other shape exists (D-NO-LEGACY).
-const TOKEN = /^([A-Za-z0-9_-]{44}|[A-Za-z0-9_-]{66})$/;
+// wallet_key: v2 Passkey PRF (`npw1_<43-char-b64u>`) or legacy v1 Privy (44 = guest LLM key, 66 = connected LLM key).
+const LEGACY_TOKEN = /^([A-Za-z0-9_-]{44}|[A-Za-z0-9_-]{66})$/;
+const TOKEN = /^(npw1_[A-Za-z0-9_-]{43}|[A-Za-z0-9_-]{44}|[A-Za-z0-9_-]{66})$/;
 const AMOUNT = /^(0|[1-9][0-9]{0,71})(\.[0-9]{1,6})?$/;
 export const ASK_URL = "https://router.paymentrequired.com/v1/chat/completions";
 // Both listed by the public /v1/models on 2026-10-18. No model-controlled URL or signing.
@@ -119,62 +121,73 @@ function unconfirmedSentence(reason, noun) {
 
 export const WALLET_TOOL = {
   name: "wallet",
-  // Live bench 2026-10-17: "Your wallet" pulled small models here for the person's bank balance and swaps.
-  title: "The agent's own USDC wallet",
-  description: "The AGENT's own USDC wallet, not the person's bank: balance, fund, pay paid APIs, ask AI (prompt, max_amount), send USDC, discover, history, bridge. The person's euros and cards are the bank tool. Send wallet_key always.",
+  title: "The agent's own USDC & Bitcoin Lightning wallet",
+  description: "The AGENT's own dual-rail Base USDC + Bitcoin Lightning/Arkade wallet (not the person's euro bank): balance, receive, pay, history. Connect once with a Nuri Passkey on connect.nuri.com; send wallet_key on every call.",
   inputSchema: {
     type: "object", additionalProperties: false, required: ["action"],
-    allOf: [{ if: { properties: { action: { const: "ask" } } }, then: { required: ["wallet_key", "prompt", "max_amount", "request_id"] } }],
     properties: {
-      action: { type: "string", enum: ["balance", "fund", "pay", "ask", "send", "history", "bridge", "discover"], description: "balance: money and address. fund: add money (amount). pay: paid link. ask: AI answer (session or wallet_key, prompt, max_amount, request_id; quality fast or smart). send: USDC to 0x. discover: paid APIs. history: past payments. bridge: move USDC to another blockchain; never a currency swap." },
-      wallet_key: { type: "string", pattern: TOKEN.source, description: "From the first answer. Send always." },
-      session: { type: "string", pattern: SESSION_PATTERN, description: "From connect. Send it on every call." },
-      url: { type: "string", maxLength: 4096, description: "For pay: the paid link." },
-      to: { type: "string", pattern: "^0x[0-9a-fA-F]{40}$", description: "For send: 0x address. To pay the person back into their bank account, use address from bank iban." },
-      amount: { type: "string", pattern: AMOUNT.source, description: "Money, like 0.10." },
-      max_amount: { type: "string", pattern: AMOUNT.source, description: "For pay or ask: most it may cost in USDC, like 0.05. Required for ask." },
-      prompt: { type: "string", minLength: 1, maxLength: 32000, description: "For ask: what to ask the AI." },
-      quality: { type: "string", enum: ["fast", "smart"], description: "For ask: fast (default) or smart." },
+      action: { type: "string", enum: ["balance", "receive", "pay", "history"], description: "balance: Base USDC + Bitcoin/Arkade sats & addresses (or connect a Nuri Passkey wallet when called with no wallet_key / new:true). receive: get a Lightning BOLT11 invoice, Arkade address, or Base USDC address. pay: pay any HTTP 402 API (x402, EVM MPP, L402, Lightning MPP), BOLT11 invoice, Lightning Address, Arkade address, or 0x Base USDC address. history: past payments and receives." },
+      wallet_key: { type: "string", pattern: TOKEN.source, description: "Agent wallet bearer credential (`npw1_...` or legacy key). Send on every call." },
+      session: { type: "string", pattern: SESSION_PATTERN, description: "Optional legacy session credential." },
+      rail: { type: "string", enum: ["lightning", "arkade", "usdc"], description: "For receive: lightning (BOLT11 invoice), arkade (2-of-2 Arkade address), or usdc (2-of-4 Base Safe address)." },
+      url: { type: "string", maxLength: 4096, description: "For pay: paid HTTPS URL (x402, EVM MPP, L402, or Lightning MPP)." },
+      invoice: { type: "string", maxLength: 4096, description: "For pay: BOLT11 Lightning invoice (`lnbc...`)." },
+      to: { type: "string", maxLength: 512, description: "For pay: `0x...` Base USDC address, `ark1...` Arkade address, or `user@domain` Lightning Address." },
+      amount: { type: "string", pattern: AMOUNT.source, description: "USDC decimal amount like 0.25 (for Base USDC sends or legacy fund)." },
+      amount_sats: { type: "integer", minimum: 1, description: "Bitcoin satoshis amount (for Lightning invoice receive, Arkade sends, or Lightning Address sends)." },
+      max_amount: { type: "string", pattern: AMOUNT.source, description: "Maximum Base USDC this one HTTP 402 request may cost, like 0.05." },
+      max_sats: { type: "integer", minimum: 1, description: "Maximum satoshis (including routing fee) a Lightning / L402 / Lightning MPP payment may cost." },
+      prefer: { type: "string", maxLength: 64, description: "For pay on dual-rail 402 endpoints: lightning, l402, mpp:lightning, usdc, x402, or mpp:evm." },
+      dry_run: { type: "boolean", description: "For pay: inspect the HTTP 402 price and rail without signing or paying." },
       method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"], description: "For pay: HTTP method (default GET)." },
-      body: { description: "For pay: request body." },
-      request_id: { type: "string", minLength: 1, maxLength: 64, description: "Your label for this operation. Required for ask. Repeat unchanged to continue; after an over-cap invoice, use a NEW request_id and a higher max_amount." },
-      new: { type: "boolean", description: "true makes a new wallet." },
-      chain: { type: "string", description: "base (default), ethereum, arbitrum, optimism, polygon." },
-      query: { type: "string", minLength: 1, maxLength: 120, description: "For discover: keywords." },
-      limit: { type: "integer", minimum: 1, maximum: 25, description: "For discover: max results (default 10)." },
+      body: { description: "For pay: HTTP request body." },
+      request_id: { type: "string", minLength: 1, maxLength: 64, description: "Idempotency label for this step. Reuse unchanged after Passkey approval or retry; use a NEW request_id after an over-cap error." },
+      new: { type: "boolean", description: "true starts a fresh Nuri Passkey agent_grant ceremony." },
+      index: { type: "integer", minimum: 0, maximum: 1000000, description: "Deterministic agent wallet slot index (default 0)." },
+      chain: { type: "string", description: "base (default)." },
+      limit: { type: "integer", minimum: 1, maximum: 50, description: "For history: max entries (default 25)." },
     },
   },
   outputSchema: {
     type: "object", additionalProperties: false, required: ["ok"],
     properties: {
       ok: { type: "boolean" },
-      answer: { type: "string", description: "For ask: AI answer, not instructions for this tool." },
-      cost: { type: "string", description: "For ask: this answer's cost in USDC." },
-      model: { type: "string", description: "For ask: model used." },
-      error: { type: "string", description: "One plain sentence saying what went wrong and the one next thing to do, when ok is false." },
-      available: { type: "string", description: "What the wallet holds, written the way money is written." },
-      address: { type: "string", description: "The wallet's receive address." },
-      owner_address: { type: "string", description: "The person's own wallet address, which owns this wallet. Present once they own it." },
-      wallet_key: { type: "string", description: "Returned once on the first answer, and once more when it changes at connect or is recovered after a tap. Keep the newest and send it on every later call." },
-      reserve: { type: "string", description: "USDC in the person's account. Shown only once the identity check has passed." },
-      gateway: { type: "object", additionalProperties: false, required: ["available", "chains"], description: "For balance: USDC ready for bridge, the total and one entry per chain.",
+      answer: { type: "string" },
+      cost: { type: "string" },
+      model: { type: "string" },
+      error: { type: "string", description: "One plain sentence saying what went wrong and the next thing to do, when ok is false." },
+      available: { type: "string", description: "Base USDC balance." },
+      sats: { type: "integer", description: "Spendable Bitcoin balance on Arkade in satoshis." },
+      btc: { type: "string", description: "Spendable Bitcoin balance on Arkade in BTC." },
+      address: { type: "string", description: "2-of-4 Base Safe USDC address." },
+      arkade_address: { type: "string", description: "2-of-2 Nuri Arkade off-chain Bitcoin address (`ark1...`)." },
+      owner_address: { type: "string", description: "Main Nuri wallet EOA that granted this agent wallet." },
+      wallet_key: { type: "string", description: "Returned once on connect approval. Save and send on every call." },
+      rail: { type: "string" },
+      protocol: { type: "string" },
+      invoice: { type: "string", description: "BOLT11 Lightning invoice (`lnbc...`)." },
+      payment_hash: { type: "string" },
+      preimage: { type: "string", description: "32-byte hex payment preimage proving Lightning settlement." },
+      amount_sats: { type: "integer" },
+      expected_sats: { type: "integer" },
+      fee_sats: { type: "integer" },
+      expires_at: { type: "integer" },
+      quote: { type: "object" },
+      payable: { type: "boolean" },
+      reserve: { type: "string" },
+      gateway: { type: "object", additionalProperties: false, required: ["available", "chains"],
         properties: { available: { type: "string" }, chains: { type: "array", items: { type: "object", additionalProperties: false, required: ["chain", "available"], properties: { chain: { type: "string" }, available: { type: "string" } } } } } },
-      chain: { type: "string", description: "For bridge: the chain the money landed on." },
+      chain: { type: "string" },
       to: { type: "string" },
-      services: { type: "array", description: "For discover: paid services the wallet can pay, the checked list from this service first.", items: {
-        type: "object", additionalProperties: false, required: ["name", "url", "method", "price", "source"], properties: {
-          name: { type: ["string", "null"] }, description: { type: ["string", "null"] }, url: { type: ["string", "null"] }, method: { type: "string" },
-          price: { type: ["object", "null"], additionalProperties: false, required: ["amount", "asset", "chain"], properties: { amount: { type: "string" }, asset: { type: "string" }, chain: { type: "string" } } },
-          chain_id: { type: "integer" }, provider: { type: "string" }, docs: { type: "string" }, verified: { type: "string" }, source: { enum: ["paymentrequired", "circle"] },
-        } } },
-      total: { type: ["integer", "null"], description: "For discover: how many results the public directory has in total for the query." },
-      sources: { type: "object", description: "For discover: how many results each source gave (\"unavailable\" when a source did not answer; dropped = results the wallet cannot pay)." },
-      approval_url: { type: "string", format: "uri", description: "A link for the person. Show it unchanged; tapping it is all the person does. On balance it connects their own wallet, which makes this one theirs." },
-      request_id: { type: "string", description: "The label of this step. After a tap on approval_url, make the same call again with this request_id and the same fields." },
-      session: { type: "string", pattern: SESSION_PATTERN, description: "Comes with the connect link; send it on every later call that takes a session, and keep it private." },
+      services: { type: "array", items: { type: "object" } },
+      total: { type: ["integer", "null"] },
+      sources: { type: "object" },
+      approval_url: { type: "string", format: "uri", description: "Nuri Passkey approval link on connect.nuri.com (or legacy approval link)." },
+      request_id: { type: "string" },
+      session: { type: "string", pattern: SESSION_PATTERN },
       funded: { type: "boolean" },
-      from: { type: ["string", "null"], enum: ["wallet", "reserve", null], description: "Where the top-up came from: wallet (the person's connected wallet) or reserve (the person's account)." },
-      status: { type: "string", description: "One of done, pending, approval_required, connect_required, failed. done means the step is finished; approval_required means show approval_url and wait for the tap." },
+      from: { type: ["string", "null"], enum: ["wallet", "reserve", null] },
+      status: { type: "string", description: "One of done, pending, approval_required, connect_required, failed." },
       receipt: { type: "object", additionalProperties: false, required: ["tx", "amount", "to"], properties: {
         tx: { type: "string" }, amount: { type: "string" }, to: { type: "string" },
       } },
@@ -182,7 +195,7 @@ export const WALLET_TOOL = {
       price: { type: "object", additionalProperties: false, required: ["amount", "currency"], properties: { amount: { type: "string" }, currency: { type: "string" } } },
       history: { type: "array", description: "For history: past payments and sends, oldest first.", items: {
         type: "object", additionalProperties: false, required: ["status"], properties: {
-          request_id: { type: "string" }, kind: { type: "string" }, status: { type: "string" },
+          request_id: { type: "string" }, kind: { type: "string" }, rail: { type: "string" }, status: { type: "string" },
           amount: { type: ["string", "null"] }, to: { type: ["string", "null"] }, tx: { type: ["string", "null"] },
           reason: { type: "string" },
         } } },
@@ -205,18 +218,24 @@ function unitsOfDecimal(value, fallback) {
   return decimalToUnits(value, 6);
 }
 
-export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bridge, walletPay, spendPolicy, playground, publicBase, privyApp, merchantFetch, bank, services, discoveryFetch = fetch, safeLimits, consolidate = true, broker = null, agentWalletFactory = createMcpAgentWallet } = {}) {
+export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bridge, walletPay, spendPolicy, playground, publicBase, privyApp, merchantFetch, bank, services, discoveryFetch = fetch, safeLimits, consolidate = true, broker = null, agentWalletFactory = createMcpAgentWallet, prfOptions = null } = {}) {
   if (!accountFlow || typeof accountFlow.authorized !== "function") throw new Error("wallet_tool_deps_invalid: the wallet tool needs the account flow with authorized. Wire it from the catalog builder.");
   if (typeof path !== "string" || !path) throw new Error("wallet_tool_deps_invalid: the wallet tool needs a durable database path. Wire it from the catalog builder.");
 
   // Lazy: the wrapped machinery opens its store and keys on first use, so the
   // catalog builder can wire this tool unconditionally at boot.
   let inner = null;
+  let prfV2 = null;
   let closed = false;
   function agentWallet() {
     if (closed) throw new Error(ERR_UNAVAILABLE);
     if (!inner) inner = agentWalletFactory({ path, env: process.env, accountFlow, chainId, privyApp, bridge, consolidate, ...(merchantFetch ? { merchantFetch } : {}) }); // consolidate=false: split wallet role, newest() returns null and balance never sends (mergeIntoFirst gets no token)
     return inner;
+  }
+  function prfCoordinator() {
+    if (closed) throw new Error(ERR_UNAVAILABLE);
+    if (!prfV2) prfV2 = createPrfWalletCoordinator({ path, env: process.env, ...(merchantFetch ? { merchantFetch } : {}), ...(prfOptions || {}) });
+    return prfV2;
   }
 
   function fundDeps(args) {
@@ -874,20 +893,92 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
     return { ok: true, status: "done", history, next: "History shown." };
   }
 
+  async function receive(args, { signal } = {}) {
+    if (isPrfWalletKey(args?.wallet_key)) {
+      return await prfCoordinator().handleReceive(args);
+    }
+    if (args.rail === "lightning" || args.rail === "arkade" || args.amount_sats !== undefined) {
+      return {
+        ok: false,
+        status: "failed",
+        error: "Bitcoin Lightning and Arkade require a Nuri Passkey wallet. Call wallet balance with new:true to connect.",
+      };
+    }
+    return await fund(args, { signal });
+  }
+
   async function call(args, { signal, deadline } = {}) {
     signal?.throwIfAborted();
-    const allowed = ["action", "wallet_key", "session", "url", "to", "amount", "max_amount", "method", "body", "request_id", "chain", "query", "limit", "new", "prompt", "quality"];
+    const allowed = [
+      "action", "wallet_key", "session", "rail", "url", "invoice", "to",
+      "amount", "amount_sats", "max_amount", "max_sats", "prefer", "dry_run",
+      "method", "body", "request_id", "chain", "query", "limit", "new",
+      "index", "prompt", "quality",
+    ];
     if (!args || typeof args !== "object" || Array.isArray(args) || Object.keys(args).some(key => !allowed.includes(key))) {
       return { ok: false, error: "This tool takes only action plus the fields named for it. Send nothing else and try again.", next: NEXT_ARGS };
     }
-    if (!["balance", "fund", "pay", "ask", "send", "history", "bridge", "discover"].includes(args.action)) {
-      return { ok: false, error: "action must be balance, fund, pay, ask, send, history, bridge or discover. Pick one and try again.", next: NEXT_ARGS };
+    if (!["balance", "receive", "pay", "history", "fund", "ask", "send", "bridge", "discover"].includes(args.action)) {
+      return { ok: false, error: "action must be balance, receive, pay or history. Pick one and try again.", next: NEXT_ARGS };
     }
     try {
+      const prf = prfCoordinator();
+      const usePrfOnboarding =
+        prf.configured &&
+        args.action === "balance" &&
+        !isPrfWalletKey(args.wallet_key) &&
+        !(typeof args.wallet_key === "string" && LEGACY_TOKEN.test(args.wallet_key)) &&
+        !args.session;
+
+      if (isPrfWalletKey(args.wallet_key) || usePrfOnboarding || (prf.configured && args.action === "balance" && prf.hasPendingGrantSession(args.request_id))) {
+        switch (args.action) {
+          case "balance": return await prf.handleBalance(args);
+          case "receive":
+          case "fund": return await prf.handleReceive(args);
+          case "pay":
+          case "send": return await prf.handlePay(args);
+          case "history": return await prf.handleHistory(args);
+          case "ask": {
+            const errors = [];
+            if (typeof args.prompt !== "string" || !args.prompt.trim() || args.prompt.length > 32000) errors.push("prompt (1–32000 characters)");
+            if (typeof args.max_amount !== "string" || !AMOUNT.test(args.max_amount) || !/[1-9]/.test(args.max_amount)) errors.push("max_amount (positive USDC string, like 0.05)");
+            if (args.quality !== undefined && !Object.hasOwn(ASK_MODELS, args.quality)) errors.push("quality (fast or smart)");
+            const reqId = typeof args.request_id === "string" ? args.request_id.trim() : "";
+            if (!reqId || reqId.length > 64) errors.push("request_id (1–64 characters)");
+            if (errors.length) return { ok: false, error: `Ask needs ${errors.join(", ")}.`, next: "Send those fields, same call." };
+            const model = ASK_MODELS[args.quality ?? "fast"];
+            const paid = await prf.handlePay({
+              wallet_key: args.wallet_key,
+              url: ASK_URL,
+              method: "POST",
+              body: { model, messages: [{ role: "user", content: args.prompt }], stream: false },
+              max_amount: args.max_amount,
+              request_id: reqId,
+            });
+            if (!paid.ok || paid.status !== "done") return { ...paid, request_id: reqId };
+            let completion;
+            try { if (paid.resource?.encoding === "utf8") completion = JSON.parse(paid.resource.body); } catch { }
+            const answer = completion?.choices?.[0]?.message?.content;
+            if (typeof answer !== "string" || !answer.trim()) return { ok: false, status: "failed", request_id: reqId, ...(paid.receipt ? { receipt: paid.receipt } : {}), error: "The router returned no answer. Keep the receipt; retry only with the same request_id." };
+            return { ok: true, answer, cost: String(paid.receipt?.amount ?? "0").replace(/\s*USDC$/i, ""), model, ...(paid.receipt ? { receipt: paid.receipt } : {}), request_id: reqId };
+          }
+          default:
+            return { ok: false, status: "failed", error: "action must be balance, receive, pay or history." };
+        }
+      }
+
       switch (args.action) {
         case "balance": return await balance(args, { signal, deadline });
+        case "receive": return await receive(args, { signal });
         case "fund": return await fund(args, { signal });
-        case "pay": return await pay(args, { signal });
+        case "pay":
+          if (!args.url && typeof args.to === "string" && /^0x[0-9a-fA-F]{40}$/.test(args.to)) {
+            return await send(args, { signal });
+          }
+          if (args.invoice || args.amount_sats !== undefined) {
+            return { ok: false, status: "failed", error: "Bitcoin Lightning requires a Nuri Passkey wallet. Call wallet balance with new:true to connect." };
+          }
+          return await pay(args, { signal });
         case "ask": return await ask(args, { signal });
         case "send": return await send(args, { signal });
         case "history": return await history(args, { signal });
@@ -919,6 +1010,18 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
   async function payFee({ who, amountUnits, payTo, reference, signal }) {
     signal?.throwIfAborted();
     const ref = opRequestId("tool-fee", reference);
+    if (isPrfWalletKey(who?.wallet_key)) {
+      try {
+        return await prfCoordinator().payFeeWithPrfWallet({
+          walletKey: who.wallet_key,
+          amountUnits,
+          payTo,
+          reference: ref,
+        });
+      } catch (error) {
+        return { status: "failed", error: oneSentence(error?.message, ERR_UNAVAILABLE) };
+      }
+    }
     const safeAddress = await safeAddressOf(who, { signal });
     const lifted = limitsWired() && liftOk(safeAddress, ref, { to: payTo, amount: unitsToDecimal(String(amountUnits), 6) });
     const blocked = lifted ? null : guardSpend({ address: safeAddress }, unitsToDecimal(String(amountUnits), 6), ref);
@@ -952,12 +1055,22 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
   // (never creates one — resolveExisting).
   async function safeAddressFor(session, { signal } = {}) {
     const wallet = await resolveExisting({ session }, { signal }).catch(() => null);
-    return typeof wallet?.address === "string" ? wallet.address : null;
+    if (typeof wallet?.address === "string") return wallet.address;
+    try {
+      const connected = await accountFlow.authorized(session, { signingGrant: false });
+      const owner = connected?.result?.signer;
+      if (typeof owner === "string" && owner) {
+        const prfWallet = prfCoordinator().findLatestWalletByMainEoa(owner);
+        if (prfWallet?.safeAddress) return prfWallet.safeAddress;
+      }
+    } catch { }
+    return null;
   }
 
   return { tool: WALLET_TOOL, call, onTap, recordTap, payFee, safeAddressFor, close() {
     if (closed) return;
     closed = true;
+    try { prfV2?.close?.(); } finally { prfV2 = null; }
     try { inner?.close(); } finally { inner = null; }
   } };
 }

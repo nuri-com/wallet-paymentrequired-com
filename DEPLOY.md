@@ -19,8 +19,15 @@ Build on the box from a reviewed commit: `docker build --build-arg GIT_SHA=$SHA 
 | State mount | directory holding `SHORT_LINKS_DB` **and every `<db>.chain-<id>` sidecar** | `src/mcp-agent-wallet.mjs:225` |
 | Agent store | `AGENT_STORE_PATH` (same mount) | `src/server-boot-check.mjs:9` |
 | Read-only key files | `AGENT_KERNEL_FUNDER_KEY_FILE`, optional `ROOT_SIGNER_RESULT_KEY_FILE`, `AA_PAYMASTER_SIGNER_KEY_PATH` | `src/agent-kernel-runtime.mjs:310`, `src/signer-broker-hook.mjs:27`, `src/aa-register.mjs:104` |
-| Peers | `BANKING_RPC_URL`, `LEGACY_RPC_URL`, `SERVICE_RPC_SECRET` | `src/service-mode.mjs:43-47` |
+| Peers | `BANKING_RPC_URL`, `LEGACY_RPC_URL`, `SERVICE_RPC_SECRET`, `AGENT_COSIGNER_URL`, `AGENT_COSIGNER_RPC_SECRET` | `src/service-mode.mjs:43-47`, `src/mcp-wallet-prf-v2.mjs` |
 | Refused | `WIREX_TOKEN_URL`, `WIREX_COMPANY_ID`, `WIREX_CLIENT_ID`, `WIREX_CLIENT_SECRET` | `src/service-mode.mjs:24-28` |
+
+Automated deployment: `.github/workflows/deploy.yml` runs all offline checks (`npm run check`,
+`npm run check:ask`, `npm run check:ask:regression`, `npm run check:prf`), builds
+`paymentrequired-wallet:<short_sha>`, tags the prior image `paymentrequired-wallet:rollback`, updates
+`PR_WALLET_IMAGE` / `PR_WALLET_IMAGE_ID` / `PR_WALLET_SHA` / `PR_WALLET_SRC_SHA256` in
+`/opt/paymentrequired/split-images.env` on `46.225.135.119`, restarts `wallet` via `docker compose`,
+and verifies `http://127.0.0.1:8798/healthz`.
 
 The edge publishes the browser routes listed in README "Surface" plus `POST /mcp`. `/rpc/tool`
 stays private. Edge change is parent-owned; UNVERIFIED in production.

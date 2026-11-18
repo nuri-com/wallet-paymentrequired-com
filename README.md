@@ -1,17 +1,33 @@
 # paymentrequired wallet service
 
 The wallet service of paymentrequired.com, served at `wallet.paymentrequired.com`. It runs the
-`wallet` MCP tool (`src/mcp-wallet-tool.mjs`): balance, fund, pay, ask, send, history, bridge,
-discover. The agent Safe is the payer. It holds no Wirex client and no Wirex credentials. Card,
-IBAN, account and bank-root payments belong to the banking service.
+4-action dual-rail `wallet` MCP tool (`src/mcp-wallet-tool.mjs` + `src/mcp-wallet-prf-v2.mjs`):
+**`balance`**, **`receive`**, **`pay`**, and **`history`** across **Base USDC** (`x402`, EVM `MPP`,
+direct `0x` transfers) and **Bitcoin Lightning / Arkade** (`L402`, Lightning `MPP`, `BOLT11`,
+Lightning Address `LNURL-pay`, and native `ark1` VTXOs via Arkade Intents — zero Boltz).
+
+New wallets onboard with a single vendor-independent **Nuri Passkey PRF** tap on `connect.nuri.com`
+(`operation: "agent_grant"`, bearer token `npw1_<43-char-base64url>`), deriving domain-separated
+Agent EVM + Bitcoin child keys (`nuri-agent-wallet-v1`) co-signed by `nuri-agent-cosigner`
+(`127.0.0.1:8794`) over a **2-of-4 Base Safe v1.4.1** and a **2-of-2 MuSig2 + 14-day server-decay
+Arkade VTXO script**. All existing v1 Privy/ZeroDev wallets (`44`-char and `66`-char `wallet_key`)
+remain 100% live in place; see [`docs/CUSTODY-EVOLUTION.md`](docs/CUSTODY-EVOLUTION.md) and
+[`docs/AGENT-DERIVATION-SPEC.md`](docs/AGENT-DERIVATION-SPEC.md).
+
+The service holds no Wirex client and no Wirex credentials. Card, IBAN, account and bank-root
+payments belong to the banking service.
 
 ```mermaid
 flowchart LR
   AG[agent] -- wallet.paymentrequired.com/mcp --> W[wallet :8798]
+  W -- agent_grant E2EE --> CN[connect.nuri.com]
+  W -- loopback co-sign --> CS[nuri-agent-cosigner :8794]
+  W -- Base Safe v1.4.1 --> BASE[Base USDC x402 / MPP]
+  W -- Arkade + Intents RFQ --> ARK[arkade.computer / Lightning]
   A[peer facade :8795] -- private RPC wallet/helper/bridge --> W
   B[banking :8796] -- helper: charge/safe_address/on_tap/identity --> W
   W -- bank send top-up, helper wirex_read --> B
-  W -- register/hydrate --> S[root signer :8797]
+  W -- legacy v1 register/hydrate --> S[root signer :8797]
   P[person's browser] -- /bridge/privy, /api/browser-sessions --> W
 ```
 
@@ -22,6 +38,7 @@ npm ci && npm run build:privy      # public/privy-bridge.js (build-only deps)
 cp .env.example .env               # fill the custody values; never commit .env
 npm start                          # node src/wallet-server.mjs
 npm run check                      # node --check every module + import-closure check
+npm run check:prf                  # Passkey PRF + 2-of-4 Safe + 2-of-2 Arkade/Lightning E2E
 ```
 
 Boot refuses when:
