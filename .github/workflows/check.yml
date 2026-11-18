@@ -21,3 +21,5 @@ jobs:
         run: for run in 1 2 3; do npm run check:ask || exit 1; done
       - name: Negative controls and restored pass
         run: npm run check:ask:regression
+      - name: Passkey PRF + 2-of-4 Safe + 2-of-2 Arkade/Lightning E2E
+        run: npm run check:prf

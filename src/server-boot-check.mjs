@@ -3,11 +3,29 @@
 
 
 export function assertAgentCustodyBootEnv(env = process.env) {
+  const hasPrfCosigner =
+    typeof env.AGENT_COSIGNER_URL === "string" &&
+    env.AGENT_COSIGNER_URL.trim() &&
+    typeof env.AGENT_COSIGNER_RPC_SECRET === "string" &&
+    env.AGENT_COSIGNER_RPC_SECRET.trim();
+
+  if (hasPrfCosigner) {
+    requiredAgentCustodyString(env.AGENT_KERNEL_ENCRYPTION_KEY, "AGENT_KERNEL_ENCRYPTION_KEY");
+    // If legacy Privy variables are not set, allow pure vendor-independent Passkey PRF boot.
+    if (
+      !env.PRIVY_AGENT_APP_ID &&
+      !env.PRIVY_AGENT_APP_SECRET &&
+      !env.PRIVY_AGENT_AUTHORIZATION_PRIVATE_KEY
+    ) {
+      return;
+    }
+  }
+
   requiredAgentCustodyString(env.PRIVY_AGENT_APP_ID, "PRIVY_AGENT_APP_ID");
   requiredAgentCustodyString(env.PRIVY_AGENT_APP_SECRET, "PRIVY_AGENT_APP_SECRET");
   requiredAgentCustodyString(env.PRIVY_AGENT_AUTHORIZATION_PRIVATE_KEY, "PRIVY_AGENT_AUTHORIZATION_PRIVATE_KEY");
   requiredAgentCustodyString(env.AGENT_STORE_PATH, "AGENT_STORE_PATH");
-  if (env.AGENT_CUSTODY_MODEL !== "nuri-privy-app-2of2") {
+  if (!["nuri-privy-app-2of2", "nuri-passkey-prf-v1"].includes(env.AGENT_CUSTODY_MODEL)) {
     throw new Error(env.AGENT_CUSTODY_MODEL && String(env.AGENT_CUSTODY_MODEL).trim()
       ? "agent_custody_model_unsupported"
       : "AGENT_CUSTODY_MODEL_required");

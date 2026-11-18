@@ -7,7 +7,7 @@ const ALWAYS_TOOLS = ["wallet", "account", "bank"];
 const HOME = { wallet: "wallet.paymentrequired.com/mcp", account: "banking.paymentrequired.com/mcp", bank: "banking.paymentrequired.com/mcp" };
 
 const WHICH = {
-  wallet: "- wallet: the agent's own USDC (not the person's bank). balance, fund, pay (paid API), send (USDC to 0x), discover (find paid APIs first), history, bridge.",
+  wallet: "- wallet: the agent's own Base USDC + Bitcoin Lightning/Arkade wallet (not the person's bank). 4 actions: balance, receive, pay (HTTP 402 x402/MPP/L402, BOLT11, Arkade, or 0x USDC), history.",
   bank: "- bank: the person's card and account. card, iban (IBAN + balance), send, swap (10 or more), transactions, manage (op: freeze, unfreeze, activate, set-limit, add-payout-card, payout-cards, 3ds_status, …).",
   account: "- account: connect (status), identity check (verify), agent spending limits (limits). Never for money or cards.",
 };
@@ -20,8 +20,8 @@ const EXAMPLES = [
   [["bank"], "card limit → manage set-limit, limits {daily_limit: 500}"],
   [["bank"], "card check / 3-D Secure → manage 3ds_status"],
   [["account"], "agent limits → account limits"],
-  [["wallet"], "agent wallet → wallet balance (session)"],
-  [["wallet"], "AI answer → wallet ask (session or wallet_key, prompt, max_amount like 0.05, request_id; quality fast or smart). Retry unchanged with the same request_id. Over-cap invoice: send again with a NEW request_id and a higher max_amount."],
+  [["wallet"], "agent wallet → wallet balance (wallet_key, or new:true to connect with a Nuri Passkey)"],
+  [["wallet"], "pay API / Lightning / USDC → wallet pay (wallet_key, url or invoice or to, request_id; optional max_amount / max_sats). Retry unchanged with the same request_id. Over-cap invoice: send again with a NEW request_id and a higher max_amount."],
 ];
 
 export function instructions(toolNames = ALWAYS_TOOLS) {

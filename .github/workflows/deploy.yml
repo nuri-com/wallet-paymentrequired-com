@@ -1,0 +1,118 @@
+name: Deploy wallet to paymentrequired-tools
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Syntax, import-closure, ask & PRF/Arkade E2E checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run check
+      - run: npm run check:ask
+      - run: npm run check:ask:regression
+      - run: npm run check:prf
+
+  deploy:
+    name: Build & deploy nuri-wallet to 46.225.135.119
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: deploy-paymentrequired-wallet
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image & deploy over SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: 46.225.135.119
+          DEPLOY_USER: root
+          GIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          SHORT_SHA="${GIT_SHA:0:7}"
+          BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          IMAGE_TAG="paymentrequired-wallet:${SHORT_SHA}"
+
+          docker build \
+            --build-arg GIT_SHA="${GIT_SHA}" \
+            --build-arg BUILT_AT="${BUILT_AT}" \
+            -t "${IMAGE_TAG}" .
+          IMAGE_ID="$(docker image inspect -f '{{.Id}}' "${IMAGE_TAG}")"
+          SRC_SHA256="$(git archive "${GIT_SHA}" | sha256sum | awk '{print $1}')"
+
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${DEPLOY_SSH_KEY}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${DEPLOY_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
+
+          docker save "${IMAGE_TAG}" | gzip -1 | ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes "${DEPLOY_USER}@${DEPLOY_HOST}" "gunzip | docker load"
+
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes "${DEPLOY_USER}@${DEPLOY_HOST}" bash -s -- "${IMAGE_TAG}" "${IMAGE_ID}" "${GIT_SHA}" "${SRC_SHA256}" <<'REMOTE'
+          set -euo pipefail
+          IMAGE_TAG="$1"
+          IMAGE_ID="$2"
+          FULL_SHA="$3"
+          SRC_SHA256="$4"
+          ENV_FILE="/opt/paymentrequired/split-images.env"
+
+          if grep -q '^PR_WALLET_IMAGE=' "$ENV_FILE"; then
+            PREV_IMG="$(grep '^PR_WALLET_IMAGE=' "$ENV_FILE" | head -n1 | cut -d= -f2-)"
+            if [ -n "$PREV_IMG" ] && docker image inspect "$PREV_IMG" >/dev/null 2>&1; then
+              docker tag "$PREV_IMG" paymentrequired-wallet:rollback || true
+            fi
+          fi
+
+          python3 - "$ENV_FILE" "$IMAGE_TAG" "$IMAGE_ID" "$FULL_SHA" "$SRC_SHA256" <<'PY'
+          import pathlib, re, sys
+          path = pathlib.Path(sys.argv[1])
+          tag, img_id, sha, src_sha = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+          text = path.read_text()
+          updates = {
+              "PR_WALLET_IMAGE": tag,
+              "PR_WALLET_IMAGE_ID": img_id,
+              "PR_WALLET_SHA": sha,
+              "PR_WALLET_SRC_SHA256": src_sha,
+          }
+          for k, v in updates.items():
+              line = f"{k}={v}"
+              if re.search(rf"^{k}=", text, flags=re.M):
+                  text = re.sub(rf"^{k}=.*$", line, text, flags=re.M)
+              else:
+                  if not text.endswith("\n"):
+                      text += "\n"
+                  text += line + "\n"
+          path.write_text(text)
+          PY
+
+          docker compose \
+            -f /opt/paymentrequired/docker-compose.yml \
+            --env-file /opt/paymentrequired/.env \
+            --env-file /opt/paymentrequired/split-images.env \
+            up -d --no-deps wallet
+
+          for i in $(seq 1 25); do
+            if curl -fsS http://127.0.0.1:8798/healthz >/dev/null 2>&1; then
+              curl -fsS http://127.0.0.1:8798/healthz
+              echo ""
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "nuri-wallet failed healthz check" >&2
+          exit 1
+          REMOTE
