@@ -1,13 +1,13 @@
 
 
 // Instructions for ONE split server, short on purpose: every line is read on every turn, and the
-// weak-model bench (2026-10-17) showed longer text = more thinking tokens, not more correct calls.
-// instructions(toolNames) names only this server's tools and where the others live.
+// weak-model bench showed shorter, clearer instructions beat long docs — especially inside 64k local models.
+// instructions(toolNames) names only this server's tools plus a compact directory of companion MCP servers.
 const ALWAYS_TOOLS = ["wallet", "account", "bank"];
 const HOME = { wallet: "wallet.paymentrequired.com/mcp", account: "banking.paymentrequired.com/mcp", bank: "banking.paymentrequired.com/mcp" };
 
 const WHICH = {
-  wallet: "- wallet: the agent's own Base USDC + Bitcoin Lightning/Arkade wallet (not the person's bank). 4 actions: balance, receive, pay (HTTP 402 x402/MPP/L402, BOLT11, Arkade, or 0x USDC), history.",
+  wallet: "- wallet: the agent's own Base USDC + Bitcoin Lightning/Arkade/on-chain wallet (4 actions: balance, receive, pay, history). Cross-rail USDC <-> Bitcoin/Lightning converts automatically.",
   bank: "- bank: the person's card and account. card, iban (IBAN + balance), send, swap (10 or more), transactions, manage (op: freeze, unfreeze, activate, set-limit, add-payout-card, payout-cards, 3ds_status, …).",
   account: "- account: connect (status), identity check (verify), agent spending limits (limits). Never for money or cards.",
 };
@@ -20,13 +20,42 @@ const EXAMPLES = [
   [["bank"], "card limit → manage set-limit, limits {daily_limit: 500}"],
   [["bank"], "card check / 3-D Secure → manage 3ds_status"],
   [["account"], "agent limits → account limits"],
-  [["wallet"], "agent wallet → wallet balance (wallet_key, or new:true to connect with a Nuri Passkey)"],
-  [["wallet"], "pay API / Lightning / USDC → wallet pay (wallet_key, url or invoice or to, request_id; optional max_amount / max_sats). Retry unchanged with the same request_id. Over-cap invoice: send again with a NEW request_id and a higher max_amount."],
+  [["wallet"], "setup / balance → wallet {action: \"balance\"} (no wallet_key starts create/connect; with wallet_key shows USDC + sats)"],
+  [["wallet"], "receive → wallet {action: \"receive\", wallet_key, rail: \"lightning\"|\"usdc\"|\"arkade\", amount_sats?}"],
+  [["wallet"], "pay 402 API → wallet {action: \"pay\", wallet_key, to: \"https://...\", max_amount?/max_sats?, dry_run?, request_id}. Over-cap: retry with a NEW request_id and a higher max_amount."],
+  [["wallet"], "pay invoice / address → wallet {action: \"pay\", wallet_key, to: \"lnbc...\"|\"user@domain\"|\"bc1...\"|\"ark1...\"|\"0x...\", amount?/amount_sats?, request_id} (amount = USDC for 0x...; amount_sats = sats for BTC/LN)."],
+];
+
+const COMPANION_DIRECTORY = [
+  "- SwapKit (https://swapkit.nuri.com/mcp): swap, deposit, or pay ANY other asset (Monero XMR, ETH, SOL, EURC, etc.) via BitcoinVN/Satora.",
+  "- Banking (https://banking.paymentrequired.com/mcp): person's euro IBAN, debit card, SEPA, and spending limits (account, bank).",
+  "- Browser / checkout: for web stores (e.g. xmrstreet.store, nadanada.me), use a browser tool to get the Lightning invoice or bc1.../bitcoin: address, then pay it with wallet pay.",
 ];
 
 export function instructions(toolNames = ALWAYS_TOOLS) {
   const names = toolNames.filter(name => name !== "connect_wallet");
   const here = new Set(names);
+
+  // Dedicated wallet-only server: keep rules 100% focused on wallet_key + Passkey create/connect + companion directory.
+  if (here.size === 1 && here.has("wallet")) {
+    return `Tool here: wallet.
+${WHICH.wallet}
+
+RULES
+1. No wallet_key yet: call wallet {action: "balance"}. Show BOTH create_url (new to Nuri) and approval_url (existing Passkey). After approval, repeat wallet {action: "balance", request_id} to get your deterministic wallet_key (npw1_...).
+2. Hold a wallet_key: send it on every call (balance, receive, pay, history).
+3. wallet pay accepts ANY destination in \`to\`: https:// 402 API (x402/L402/MPP), lnbc... BOLT11, user@domain, bc1.../bitcoin:... on-chain Bitcoin, ark1... Arkade, or 0x... Base USDC. Always include a short request_id.
+4. Over-cap error: STOP and tell the person the exact price; NEVER raise max_amount/max_sats without asking them first. Once they approve, send again with a NEW request_id and a higher max_amount. Other failures: report the exact error. Do what next says.
+
+EXAMPLES
+${EXAMPLES.filter(([need]) => need.every(name => here.has(name))).map(([, text]) => `- ${text}`).join("\n")}
+
+COMPANION TOOLS (separate MCP servers — share their URL when asked for other assets/fiat; do not invent fields on wallet)
+${COMPANION_DIRECTORY.join("\n")}
+
+Reply short, in the person's language.`;
+  }
+
   const away = ALWAYS_TOOLS.filter(name => !here.has(name));
   const other = [...new Set(away.map(name => HOME[name]))].map(url => `${away.filter(name => HOME[name] === url).join(", ")}: https://${url}`);
   const connect = here.has("account") ? "only if you hold no session: account status → show link → after tap, the same call with its request_id gives the session." : "only if you hold no session: wallet balance new:true.";
