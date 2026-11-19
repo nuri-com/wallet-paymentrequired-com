@@ -1,12 +1,13 @@
 // Role homepages and host-aware agent discovery docs (/llms.txt, /skill.md)
-// for wallet origins (wallet.paymentrequired.com, wallet.nuri.com, nuriwallet.com)
+// for wallet origins (agent.nuri.com, wallet.nuri.com, nuriwallet.com, wallet.paymentrequired.com)
 // plus legacy role homepages (banking, signer).
 const APEX = "https://paymentrequired.com";
 const DEFAULT_WALLET_HOST = "wallet.paymentrequired.com";
 export const WALLET_HOSTS = Object.freeze([
-  "wallet.paymentrequired.com",
+  "agent.nuri.com",
   "wallet.nuri.com",
   "nuriwallet.com",
+  "wallet.paymentrequired.com",
 ]);
 const ALLOWED_WALLET_HOSTS = new Set(WALLET_HOSTS);
 
@@ -267,199 +268,385 @@ function walletIndexHtml(origin) {
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${host} — Agent Wallet</title>
+<meta name="description" content="One passkey gives any AI agent non-custodial Bitcoin Lightning, Arkade, on-chain BTC, and Base USDC via 4 MCP actions or plain HTTP REST. No OAuth, no seed phrase, no custody.">
 <link rel="icon" href="data:,">
 <style>
-:root{--bg:#f8fafc;--card:#ffffff;--ink:#0f172a;--muted:#475569;--line:#e2e8f0;--accent:#0f172a;--accent-hover:#1e293b;--blue:#1d4ed8;--blue-soft:#eff6ff;--warn-bg:#fffbeb;--warn-border:#fcd34d;--warn-ink:#92400e;--ok-bg:#f0fdf4;--ok-border:#86efac;--ok-ink:#166534;--err-bg:#fef2f2;--err-border:#fca5a5;--err-ink:#991b1b}
-*{box-sizing:border-box}
-html,body{margin:0;padding:0;background:var(--bg);color:var(--ink)}
-body{font:16px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
-main{max-width:760px;margin:0 auto;padding:2rem 1.25rem 4rem}
-header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:.75rem;margin-bottom:1.75rem}
-.brand{font-weight:700;font-size:15px;color:var(--ink);text-decoration:none;letter-spacing:-.01em}
-.nav{display:flex;gap:1rem;font-size:14px}
-.nav a{color:var(--muted);text-decoration:none}
-.nav a:hover{color:var(--ink);text-decoration:underline}
-h1{font-size:clamp(28px,5vw,38px);line-height:1.12;letter-spacing:-.025em;margin:0 0 .75rem}
-h2{font-size:19px;line-height:1.3;margin:0 0 .65rem;letter-spacing:-.01em}
-h3{font-size:15px;line-height:1.35;margin:1.1rem 0 .4rem;color:var(--ink)}
-p{margin:0 0 .85rem}
-.lead{font-size:18px;color:var(--muted);margin:0 0 1.5rem}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:1.35rem 1.4rem;margin:0 0 1.25rem;box-shadow:0 1px 2px rgba(15,23,42,.04)}
-.row{display:flex;flex-wrap:wrap;gap:.65rem;align-items:center}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:.4rem;font:inherit;font-size:15px;font-weight:600;padding:.65rem 1.05rem;border-radius:10px;border:1px solid transparent;cursor:pointer;text-decoration:none;transition:background .12s,border-color .12s}
-.btn:disabled{opacity:.6;cursor:wait}
-.btn-primary{background:var(--accent);color:#fff}
-.btn-primary:hover:not(:disabled){background:var(--accent-hover)}
-.btn-secondary{background:#fff;color:var(--ink);border-color:#cbd5e1}
-.btn-secondary:hover:not(:disabled){background:#f1f5f9}
-.btn-sm{font-size:13px;padding:.4rem .7rem;border-radius:8px}
-.muted{color:var(--muted);font-size:14px}
-.code-box{display:flex;align-items:center;justify-content:space-between;gap:.6rem;background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:.55rem .75rem;margin:.35rem 0 .75rem}
-.code-box code{font:13.5px/1.45 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;overflow-wrap:anywhere;word-break:break-all;flex:1}
-code{font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;overflow-wrap:anywhere}
-.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.85rem;margin:.75rem 0 1rem}
-.stat{background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:.85rem 1rem}
-.stat-label{font-size:12.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:.25rem}
-.stat-val{font-size:22px;font-weight:700;letter-spacing:-.02em}
-.stat-sub{font-size:13px;color:var(--muted);margin-top:.15rem}
-.banner{border-radius:10px;padding:.8rem .95rem;margin:.75rem 0;font-size:14px}
-.banner-info{background:var(--blue-soft);border:1px solid #bfdbfe;color:#1e3a8a}
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#08090b; --panel:#0f1114; --panel2:#14171c; --line:#1e2228; --line2:#2a3038;
+  --fg:#f4f6f8; --dim:#9aa4b2; --faint:#697280;
+  --btc:#f7931a; --acc:#5ce1b9; --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,monospace;
+  --ok-bg:rgba(92,225,185,.12); --ok-border:rgba(92,225,185,.4); --ok-ink:#5ce1b9;
+  --info-bg:rgba(96,165,250,.12); --info-border:rgba(96,165,250,.38); --info-ink:#93c5fd;
+  --warn-bg:rgba(247,147,26,.12); --warn-border:rgba(247,147,26,.4); --warn-ink:#fbbf24;
+  --err-bg:rgba(248,113,113,.12); --err-border:rgba(248,113,113,.4); --err-ink:#fca5a5;
+}
+@media(prefers-color-scheme:light){:root{
+  --bg:#fbfbfc; --panel:#fff; --panel2:#f4f6f8; --line:#e6e8ec; --line2:#d3d7de;
+  --fg:#0b0d10; --dim:#4d5663; --faint:#7b8492;
+  --ok-bg:#f0fdf4; --ok-border:#86efac; --ok-ink:#166534;
+  --info-bg:#eff6ff; --info-border:#bfdbfe; --info-ink:#1e3a8a;
+  --warn-bg:#fffbeb; --warn-border:#fcd34d; --warn-ink:#92400e;
+  --err-bg:#fef2f2; --err-border:#fca5a5; --err-ink:#991b1b;
+}}
+:root[data-theme=light]{
+  --bg:#fbfbfc; --panel:#fff; --panel2:#f4f6f8; --line:#e6e8ec; --line2:#d3d7de;
+  --fg:#0b0d10; --dim:#4d5663; --faint:#7b8492;
+  --ok-bg:#f0fdf4; --ok-border:#86efac; --ok-ink:#166534;
+  --info-bg:#eff6ff; --info-border:#bfdbfe; --info-ink:#1e3a8a;
+  --warn-bg:#fffbeb; --warn-border:#fcd34d; --warn-ink:#92400e;
+  --err-bg:#fef2f2; --err-border:#fca5a5; --err-ink:#991b1b;
+}
+:root[data-theme=dark]{
+  --bg:#08090b; --panel:#0f1114; --panel2:#14171c; --line:#1e2228; --line2:#2a3038;
+  --fg:#f4f6f8; --dim:#9aa4b2; --faint:#697280;
+  --ok-bg:rgba(92,225,185,.12); --ok-border:rgba(92,225,185,.4); --ok-ink:#5ce1b9;
+  --info-bg:rgba(96,165,250,.12); --info-border:rgba(96,165,250,.38); --info-ink:#93c5fd;
+  --warn-bg:rgba(247,147,26,.12); --warn-border:rgba(247,147,26,.4); --warn-ink:#fbbf24;
+  --err-bg:rgba(248,113,113,.12); --err-border:rgba(248,113,113,.4); --err-ink:#fca5a5;
+}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--fg);
+  font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;overflow-x:hidden}
+a{color:inherit}
+code{font-family:var(--mono);font-size:.88em;overflow-wrap:anywhere}
+.wrap{max-width:1080px;margin:0 auto;padding:0 24px;position:relative}
+section{padding:68px 0;border-top:1px solid var(--line)}
+h2{font-size:clamp(22px,3.4vw,30px);letter-spacing:-.02em;margin-bottom:8px}
+h2+.sub{color:var(--dim);margin-bottom:32px;max-width:64ch}
+h3{font-size:15px;letter-spacing:-.01em;margin:20px 0 8px}
+
+/* topbar + hero */
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;
+  padding:20px 0 0;font-size:13.5px;font-family:var(--mono)}
+.brand{font-weight:600;text-decoration:none;color:var(--fg);display:inline-flex;align-items:center;gap:8px}
+.nav{display:flex;gap:18px;flex-wrap:wrap;padding-right:42px}
+.nav a{color:var(--dim);text-decoration:none}
+.nav a:hover{color:var(--fg)}
+header{position:relative;overflow:hidden;padding:0 0 72px}
+header::before{content:"";position:absolute;inset:-40% 30% 40% -20%;
+  background:radial-gradient(circle at 30% 40%,rgba(247,147,26,.16),transparent 60%);pointer-events:none}
+header::after{content:"";position:absolute;inset:20% -20% -40% 40%;
+  background:radial-gradient(circle at 60% 50%,rgba(92,225,185,.13),transparent 60%);pointer-events:none}
+.hero-body{padding-top:52px}
+.badge{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line2);
+  border-radius:999px;padding:6px 14px;font-size:12.5px;color:var(--dim);
+  font-family:var(--mono);background:var(--panel)}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--acc);
+  box-shadow:0 0 0 3px rgba(92,225,185,.18)}
+h1{font-size:clamp(38px,7.2vw,72px);line-height:1.02;letter-spacing:-.035em;
+  font-weight:680;margin:24px 0 18px}
+h1 em{font-style:normal;background:linear-gradient(96deg,var(--btc),var(--acc));
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.lede{font-size:clamp(17px,2.1vw,21px);color:var(--dim);max-width:58ch}
+.lede b{color:var(--fg);font-weight:600}
+
+/* endpoint strip */
+.ep{margin:34px 0 12px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.ep-url{display:flex;align-items:center;gap:12px;background:var(--panel);
+  border:1px solid var(--line2);border-radius:12px;padding:12px 15px;
+  font-family:var(--mono);font-size:14.5px;min-width:0;max-width:100%}
+.ep-url span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ep-url b{color:var(--acc);font-weight:500}
+button{font:inherit;cursor:pointer;border:0;background:none;color:inherit}
+.copy{border:1px solid var(--line2);border-radius:8px;padding:5px 11px;font-size:12px;
+  color:var(--dim);font-family:var(--mono);white-space:nowrap;transition:.15s}
+.copy:hover{color:var(--fg);border-color:var(--faint)}
+.copy.done{color:var(--acc);border-color:var(--acc)}
+.noauth{display:flex;gap:10px;flex-wrap:wrap;font-size:13px;color:var(--faint);
+  font-family:var(--mono);margin-top:14px}
+.noauth i{font-style:normal;color:var(--acc)}
+.hero-cta{margin-top:26px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+
+/* interactive wallet widget */
+.widget{background:var(--panel);border:1px solid var(--line2);border-radius:16px;padding:26px}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;font:inherit;
+  font-size:14.5px;font-weight:600;padding:10px 16px;border-radius:10px;
+  border:1px solid transparent;cursor:pointer;text-decoration:none;transition:.15s}
+.btn:disabled{opacity:.55;cursor:wait}
+.btn-primary{background:linear-gradient(96deg,var(--btc),#ffad42);color:#0b0d10;border-color:transparent}
+.btn-primary:hover:not(:disabled){filter:brightness(1.06)}
+.btn-secondary{background:var(--panel2);color:var(--fg);border-color:var(--line2)}
+.btn-secondary:hover:not(:disabled){border-color:var(--faint)}
+.btn-sm{font-size:12.5px;padding:6px 11px;border-radius:8px;font-family:var(--mono);font-weight:500}
+.muted{color:var(--dim);font-size:14px}
+.code-box{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 13px;margin:6px 0 12px}
+.code-box code{font-size:13px;line-height:1.45;word-break:break-all;flex:1;color:var(--acc)}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin:14px 0 18px}
+.stat{background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:16px}
+.stat-label{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--faint);font-family:var(--mono);margin-bottom:4px}
+.stat-val{font-size:24px;font-weight:700;letter-spacing:-.02em}
+.stat-sub{font-size:13px;color:var(--dim);margin-top:3px}
+.banner{border-radius:10px;padding:11px 14px;margin:12px 0;font-size:14px}
+.banner-info{background:var(--info-bg);border:1px solid var(--info-border);color:var(--info-ink)}
 .banner-ok{background:var(--ok-bg);border:1px solid var(--ok-border);color:var(--ok-ink)}
 .banner-warn{background:var(--warn-bg);border:1px solid var(--warn-border);color:var(--warn-ink)}
 .banner-err{background:var(--err-bg);border:1px solid var(--err-border);color:var(--err-ink)}
-.input-sats{font:inherit;font-size:15px;padding:.55rem .75rem;border:1px solid #cbd5e1;border-radius:10px;width:140px;background:#fff;color:var(--ink)}
-ul{margin:.4rem 0 .6rem;padding-left:1.25rem}
-li{margin:.35rem 0}
-a{color:var(--blue)}
+.input-sats{font:inherit;font-family:var(--mono);font-size:14.5px;padding:8px 11px;
+  border:1px solid var(--line2);border-radius:9px;width:130px;background:var(--bg);color:var(--fg)}
 .hidden{display:none!important}
-.sep{border:0;border-top:1px solid var(--line);margin:1.1rem 0}
-.footer{font-size:13.5px;color:var(--muted);margin-top:1.5rem}
+.sep{border:0;border-top:1px solid var(--line);margin:20px 0}
+
+/* grids */
+.g{display:grid;gap:14px}
+.g3{grid-template-columns:repeat(auto-fit,minmax(258px,1fr))}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px}
+.card h3{font-size:15px;letter-spacing:-.01em;margin:0 0 7px;display:flex;gap:9px;align-items:center}
+.card h3 span{color:var(--btc);font-size:17px}
+.card p{color:var(--dim);font-size:14.5px}
+
+/* rails */
+.rails{list-style:none;display:grid;gap:2px;
+  grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
+  border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--line)}
+.rails li{display:flex;gap:15px;padding:20px;background:var(--panel)}
+.ri{font-size:19px;color:var(--btc);line-height:1.3;flex-shrink:0;width:22px}
+.rails strong{font-size:14.5px;font-weight:600}
+.rails p{color:var(--dim);font-size:13.5px;margin-top:3px}
+.rails code{background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:1px 5px;color:var(--acc)}
+.rails a{color:var(--acc);text-decoration:none;border-bottom:1px solid var(--line2)}
+
+/* flow */
+.flow{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(232px,1fr));counter-reset:s}
+.step{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;position:relative}
+.step::before{counter-increment:s;content:counter(s);position:absolute;top:16px;right:18px;
+  font-family:var(--mono);font-size:12px;color:var(--faint)}
+.step b{display:block;font-family:var(--mono);font-size:13px;color:var(--acc);margin-bottom:7px}
+.step p{color:var(--dim);font-size:14px}
+
+/* tools */
+.tools{display:grid;gap:2px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
+  background:var(--line);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.tool{background:var(--panel);padding:18px 20px}
+.tool code{color:var(--btc);font-size:13.5px;font-weight:600}
+.tool p{color:var(--dim);font-size:13.5px;margin-top:5px}
+
+/* code block + prompts */
+pre{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:18px;overflow-x:auto;font-family:var(--mono);font-size:13px;line-height:1.7}
+pre .c{color:var(--faint)}
+pre .k{color:var(--acc)}
+pre .s{color:var(--btc)}
+.two{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}
+.two h4{font-size:13px;font-family:var(--mono);color:var(--dim);margin-bottom:9px;font-weight:500}
+.pr{list-style:none;display:grid;gap:9px}
+.pr li{background:var(--panel);border:1px solid var(--line);border-left:2px solid var(--btc);
+  border-radius:0 10px 10px 0;padding:13px 17px;font-size:14.5px}
+.pr span{color:var(--faint);font-family:var(--mono);font-size:12.5px;display:block;margin-top:4px}
+.agent-list{margin-top:18px;padding-left:20px;color:var(--dim);font-size:14.5px}
+.agent-list li{margin:8px 0}
+.agent-list strong{color:var(--fg)}
+.agent-list a{color:var(--acc)}
+
+footer{border-top:1px solid var(--line);padding:44px 0 60px;color:var(--faint);font-size:13.5px}
+footer a{color:var(--dim);text-decoration:none;border-bottom:1px solid var(--line2)}
+footer a:hover{color:var(--fg)}
+.fl{display:flex;gap:22px;flex-wrap:wrap;margin-top:12px}
+.theme{position:fixed;top:16px;right:16px;z-index:9;border:1px solid var(--line2);
+  background:var(--panel);border-radius:8px;width:32px;height:32px;font-size:14px;color:var(--dim)}
+.theme:hover{color:var(--fg);border-color:var(--faint)}
 </style>
 </head>
 <body>
-<main>
-<header>
-  <a class="brand" href="${base}/">${host}</a>
-  <nav class="nav" aria-label="Agent docs">
-    <a href="${llmsUrl}">llms.txt</a>
-    <a href="${skillUrl}">skill.md</a>
-    <a href="${openapiUrl}">openapi.json</a>
-    <a href="#for-agents">For AI Agents</a>
-  </nav>
-</header>
+<button class="theme" id="tt" type="button" aria-label="Toggle theme">◐</button>
 
-<h1>Agent Wallet</h1>
-<p class="lead">Give your AI agent Bitcoin Lightning + Base USDC in 60 seconds. No seed phrase, no app install — secured by your Passkey.</p>
-
-<section class="card" aria-label="3-step setup">
-  <h2>3 steps from 0 to first payment</h2>
-  <ol style="margin:.4rem 0 0;padding-left:1.3rem">
-    <li><strong>Create or connect Passkey below</strong> — takes 15 seconds with Face ID, Touch ID, or a smartcard.</li>
-    <li><strong>Top up with Bitcoin Lightning or Base USDC</strong> — send even a few thousand sats or $1 USDC (auto-converts between rails).</li>
-    <li><strong>Connect your AI</strong> — coding agents (Claude Code, Codex, Goose, Cursor) work with <strong>zero MCP setup</strong> via plain HTTP (<code>${restUrl}</code>); web ChatGPT &amp; Claude use MCP (<code>${mcpUrl}</code>).</li>
-  </ol>
-</section>
-
-<section class="card" id="setup-widget" aria-labelledby="setup-heading">
-  <h2 id="setup-heading">1. Create / Connect Agent Wallet</h2>
-  <p class="muted">Non-custodial Nuri Passkey (Touch ID, Face ID, or smartcard). Set up or connect right here, top up, and test a real $0.01 agent payment.</p>
-
-  <div id="error-box" class="banner banner-err hidden" role="alert"></div>
-
-  <div id="view-idle">
-    <div class="row" style="margin-top:.9rem">
-      <button id="btn-create" type="button" class="btn btn-primary">Create New Passkey Wallet</button>
-      <button id="btn-connect" type="button" class="btn btn-secondary">Connect Existing Nuri Passkey</button>
-    </div>
-    <p class="muted" style="margin:.75rem 0 0">Opens <code>connect.nuri.com</code> in a new tab and automatically detects approval here.</p>
+<header><div class="wrap">
+  <div class="topbar">
+    <a class="brand" href="${base}/"><span class="dot"></span>${host}</a>
+    <nav class="nav" aria-label="Agent docs">
+      <a href="#setup-widget">setup</a>
+      <a href="${llmsUrl}">llms.txt</a>
+      <a href="${skillUrl}">skill.md</a>
+      <a href="${openapiUrl}">openapi.json</a>
+      <a href="#for-agents">for agents</a>
+    </nav>
   </div>
+  <div class="hero-body">
+    <div class="badge"><span class="dot"></span>live · non-custodial · MCP + plain HTTP REST</div>
+    <h1>A real money account<br>for <em>any AI agent</em>.</h1>
+    <p class="lede">One Passkey gives any AI agent <b>Bitcoin Lightning, Arkade, on-chain BTC,
+    and Base USDC</b> — with automatic cross-rail conversion, 4 tiny actions, and zero seed phrases.
+    Nothing is custodied. Works with MCP or plain <code>curl</code>.</p>
 
-  <div id="view-pending" class="hidden">
-    <div class="banner banner-info" id="pending-status" role="status">Waiting for Nuri Passkey approval… checking every 2.5s.</div>
-    <div class="row">
-      <a id="pending-open-link" class="btn btn-primary" href="#" target="_blank" rel="noopener noreferrer">Open Nuri Passkey &rarr;</a>
-      <button id="btn-poll-now" type="button" class="btn btn-secondary">Check now</button>
-      <button id="btn-cancel" type="button" class="btn btn-secondary">Start over</button>
+    <div class="ep">
+      <div class="ep-url"><span>MCP <b>${mcpUrl}</b></span>
+        <button type="button" class="copy" data-copy-text="mcp">Copy MCP URL</button></div>
+      <div class="ep-url"><span>REST <b>POST ${restUrl}</b></span>
+        <button type="button" class="copy" data-copy-text="curl">Copy cURL</button></div>
     </div>
-    <p class="muted" style="margin:.75rem 0 0">
-      <span id="pending-alt-wrap" class="hidden">Wrong path? <a id="pending-alt-link" href="#" target="_blank" rel="noopener noreferrer"></a></span>
-    </p>
+    <div class="noauth">
+      <i>✓</i> no OAuth <i>✓</i> no client registration <i>✓</i> no seed phrase
+      <i>✓</i> auto USDC &harr; BTC/Lightning <i>✓</i> zero-MCP REST fallback
+    </div>
+    <div class="hero-cta">
+      <a href="#setup-widget" class="btn btn-primary">Create / Connect Agent Wallet &darr;</a>
+      <button type="button" class="btn btn-secondary" data-copy-text="prompt">Copy Agent Prompt</button>
+      <a href="${llmsUrl}" class="btn btn-secondary">Read llms.txt &rarr;</a>
+    </div>
   </div>
+</div></header>
 
-  <div id="view-connected" class="hidden">
-    <div class="row" style="justify-content:space-between;margin-bottom:.75rem">
-      <div class="banner banner-ok" style="margin:0;padding:.45rem .8rem;font-weight:600">Wallet connected</div>
+<section id="setup-widget" aria-labelledby="setup-heading"><div class="wrap">
+  <h2 id="setup-heading">Create / Connect Agent Wallet</h2>
+  <p class="sub">Non-custodial Nuri Passkey (Face ID, Touch ID, or smartcard). Set up or connect right here, top up with Lightning or Base USDC, reveal your <code>wallet_key</code>, and test a real $0.01 agent payment.</p>
+
+  <div class="widget">
+    <div id="error-box" class="banner banner-err hidden" role="alert"></div>
+
+    <div id="view-idle">
       <div class="row">
-        <button id="btn-refresh" type="button" class="btn btn-secondary btn-sm">Refresh Balance</button>
-        <button id="btn-disconnect" type="button" class="btn btn-secondary btn-sm">Disconnect</button>
+        <button id="btn-create" type="button" class="btn btn-primary">Create New Passkey Wallet</button>
+        <button id="btn-connect" type="button" class="btn btn-secondary">Connect Existing Nuri Passkey</button>
       </div>
+      <p class="muted" style="margin-top:12px">Opens <code>connect.nuri.com</code> in a new tab and automatically detects approval here.</p>
     </div>
 
-    <div class="grid2">
-      <div class="stat">
-        <div class="stat-label">Base USDC</div>
-        <div class="stat-val" id="bal-usdc">0 USDC</div>
-        <div class="stat-sub">Pays x402, EVM MPP, 0x… + auto-bridges to BTC/LN</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Bitcoin (Lightning / Arkade)</div>
-        <div class="stat-val" id="bal-sats">0 sats</div>
-        <div class="stat-sub" id="bal-btc">0 BTC · Pays L402, LN MPP, BOLT11, bc1…</div>
-      </div>
-    </div>
-
-    <h3>Deposit Addresses</h3>
-    <div class="muted">Base USDC (Base network)</div>
-    <div class="code-box">
-      <code id="addr-usdc">—</code>
-      <button type="button" class="btn btn-secondary btn-sm" data-copy-el="addr-usdc">Copy</button>
-    </div>
-    <div id="ark-addr-wrap">
-      <div class="muted">Arkade BTC</div>
-      <div class="code-box">
-        <code id="addr-arkade">—</code>
-        <button type="button" class="btn btn-secondary btn-sm" data-copy-el="addr-arkade">Copy</button>
-      </div>
-    </div>
-
-    <h3>Fund via Bitcoin Lightning</h3>
-    <div class="row">
-      <label for="ln-sats" class="muted" style="margin:0">Sats</label>
-      <input id="ln-sats" class="input-sats" type="number" min="100" step="100" value="5000" inputmode="numeric">
-      <button id="btn-ln-invoice" type="button" class="btn btn-primary btn-sm">Create Lightning Funding Invoice (sats)</button>
-    </div>
-    <div id="ln-invoice-box" class="hidden" style="margin-top:.75rem">
-      <div class="muted" id="ln-invoice-meta"></div>
-      <div class="code-box">
-        <code id="ln-invoice-text"></code>
-        <button type="button" class="btn btn-secondary btn-sm" data-copy-el="ln-invoice-text">Copy</button>
-      </div>
+    <div id="view-pending" class="hidden">
+      <div class="banner banner-info" id="pending-status" role="status">Waiting for Nuri Passkey approval… checking every 2.5s.</div>
       <div class="row">
-        <a id="ln-wallet-uri" class="btn btn-secondary btn-sm hidden" href="#">Open in Lightning Wallet</a>
-        <span id="ln-watch-status" class="muted"></span>
+        <a id="pending-open-link" class="btn btn-primary" href="#" target="_blank" rel="noopener noreferrer">Open Nuri Passkey &rarr;</a>
+        <button id="btn-poll-now" type="button" class="btn btn-secondary">Check now</button>
+        <button id="btn-cancel" type="button" class="btn btn-secondary">Start over</button>
       </div>
+      <p class="muted" style="margin-top:12px">
+        <span id="pending-alt-wrap" class="hidden">Wrong path? <a id="pending-alt-link" href="#" target="_blank" rel="noopener noreferrer"></a></span>
+      </p>
     </div>
 
-    <hr class="sep">
+    <div id="view-connected" class="hidden">
+      <div class="row" style="justify-content:space-between;margin-bottom:12px">
+        <div class="banner banner-ok" style="margin:0;padding:6px 12px;font-weight:600">Wallet connected</div>
+        <div class="row">
+          <button id="btn-refresh" type="button" class="btn btn-secondary btn-sm">Refresh Balance</button>
+          <button id="btn-disconnect" type="button" class="btn btn-secondary btn-sm">Disconnect</button>
+        </div>
+      </div>
 
-    <h3>Agent <code>wallet_key</code></h3>
-    <div class="code-box">
-      <code id="wallet-key-display">npw1_•••••••••••••••••••••••••••••••••••••••••••</code>
-      <button id="btn-reveal-key" type="button" class="btn btn-secondary btn-sm">Reveal</button>
-      <button id="btn-copy-key" type="button" class="btn btn-secondary btn-sm">Copy</button>
-    </div>
-    <div class="banner banner-warn" id="wallet-key-warn">
-      <strong>Keep private:</strong> anyone with your <code>wallet_key</code> can spend within your Passkey policy limits. Only paste it into a trusted AI agent or MCP client.
-    </div>
+      <div class="grid2">
+        <div class="stat">
+          <div class="stat-label">Base USDC</div>
+          <div class="stat-val" id="bal-usdc">0 USDC</div>
+          <div class="stat-sub">Pays x402, EVM MPP, 0x… + auto-bridges to BTC/LN</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Bitcoin (Lightning / Arkade)</div>
+          <div class="stat-val" id="bal-sats">0 sats</div>
+          <div class="stat-sub" id="bal-btc">0 BTC · Pays L402, LN MPP, BOLT11, bc1…</div>
+        </div>
+      </div>
 
-    <h3>3. Test First Payment ($0.01 x402 Agent Inbox)</h3>
-    <p class="muted">Once funded, verify everything end-to-end with one click — pays $0.01 USDC (or auto-bridges from Lightning) to create a live agent email inbox at <code>mail.paymentrequired.com</code>.</p>
-    <div class="row">
-      <button id="btn-test-pay" type="button" class="btn btn-secondary btn-sm">Test $0.01 Payment (Create Inbox)</button>
-      <span id="test-pay-status" class="muted"></span>
-    </div>
-    <div id="test-pay-result" class="banner banner-ok hidden" style="margin-top:.6rem"></div>
+      <h3>Deposit Addresses</h3>
+      <div class="muted">Base USDC (Base network)</div>
+      <div class="code-box">
+        <code id="addr-usdc">—</code>
+        <button type="button" class="btn btn-secondary btn-sm" data-copy-el="addr-usdc">Copy</button>
+      </div>
+      <div id="ark-addr-wrap">
+        <div class="muted">Arkade BTC</div>
+        <div class="code-box">
+          <code id="addr-arkade">—</code>
+          <button type="button" class="btn btn-secondary btn-sm" data-copy-el="addr-arkade">Copy</button>
+        </div>
+      </div>
 
-    <hr class="sep">
+      <h3>Fund via Bitcoin Lightning</h3>
+      <div class="row">
+        <label for="ln-sats" class="muted">Sats</label>
+        <input id="ln-sats" class="input-sats" type="number" min="100" step="100" value="5000" inputmode="numeric">
+        <button id="btn-ln-invoice" type="button" class="btn btn-primary btn-sm">Create Lightning Funding Invoice (sats)</button>
+      </div>
+      <div id="ln-invoice-box" class="hidden" style="margin-top:12px">
+        <div class="muted" id="ln-invoice-meta"></div>
+        <div class="code-box">
+          <code id="ln-invoice-text"></code>
+          <button type="button" class="btn btn-secondary btn-sm" data-copy-el="ln-invoice-text">Copy</button>
+        </div>
+        <div class="row">
+          <a id="ln-wallet-uri" class="btn btn-secondary btn-sm hidden" href="#">Open in Lightning Wallet</a>
+          <span id="ln-watch-status" class="muted"></span>
+        </div>
+      </div>
 
-    <h3>4. Use With Your AI Agent</h3>
-    <div class="row">
-      <button type="button" class="btn btn-primary btn-sm" data-copy-text="mcp">Copy MCP URL</button>
-      <button type="button" class="btn btn-secondary btn-sm" data-copy-text="prompt">Copy Agent Prompt</button>
-      <button type="button" class="btn btn-secondary btn-sm" data-copy-text="curl">Copy cURL Command</button>
+      <hr class="sep">
+
+      <h3>Agent <code>wallet_key</code></h3>
+      <div class="code-box">
+        <code id="wallet-key-display">npw1_•••••••••••••••••••••••••••••••••••••••••••</code>
+        <button id="btn-reveal-key" type="button" class="btn btn-secondary btn-sm">Reveal</button>
+        <button id="btn-copy-key" type="button" class="btn btn-secondary btn-sm">Copy</button>
+      </div>
+      <div class="banner banner-warn" id="wallet-key-warn">
+        <strong>Keep private:</strong> anyone with your <code>wallet_key</code> can spend within your Passkey policy limits. Only paste it into a trusted AI agent or MCP client.
+      </div>
+
+      <h3>Test First Payment ($0.01 x402 Agent Inbox)</h3>
+      <p class="muted" style="margin-bottom:10px">Once funded, verify everything end-to-end with one click — pays $0.01 USDC (or auto-bridges from Lightning) to create a live agent email inbox at <code>mail.paymentrequired.com</code>.</p>
+      <div class="row">
+        <button id="btn-test-pay" type="button" class="btn btn-secondary btn-sm">Test $0.01 Payment (Create Inbox)</button>
+        <span id="test-pay-status" class="muted"></span>
+      </div>
+      <div id="test-pay-result" class="banner banner-ok hidden" style="margin-top:10px"></div>
+
+      <hr class="sep">
+
+      <h3>Use With Your AI Agent</h3>
+      <div class="row">
+        <button type="button" class="btn btn-primary btn-sm" data-copy-text="mcp">Copy MCP URL</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-copy-text="prompt">Copy Agent Prompt</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-copy-text="curl">Copy cURL</button>
+      </div>
+      <p class="muted" style="margin-top:10px">
+        <strong>ChatGPT / Claude web:</strong> Settings &rarr; Connectors / Apps &rarr; Add <code>${mcpUrl}</code> (Auth: None).<br>
+        <strong>Claude Code / Codex / Goose / Cursor (no MCP needed):</strong> paste the Agent Prompt or call <code>POST ${restUrl}</code> directly with <code>wallet_key</code>.
+      </p>
     </div>
-    <p class="muted" style="margin-top:.6rem">
-      <strong>ChatGPT / Claude web:</strong> Settings &rarr; Connectors / Apps &rarr; Add <code>${mcpUrl}</code> (Auth: None).<br>
-      <strong>Claude Code / Codex / Goose / Cursor (no MCP needed):</strong> paste the Agent Prompt or call <code>POST ${restUrl}</code> directly with <code>wallet_key</code>.
-    </p>
   </div>
-</section>
+</div></section>
 
-<section class="card" id="for-agents" aria-labelledby="agents-heading">
-  <h2 id="agents-heading">For AI Agents (MCP or Plain HTTP)</h2>
-  <p>MCP endpoint (Streamable HTTP) — or plain JSON REST (zero MCP setup required):</p>
+<section><div class="wrap">
+  <h2>Authless on purpose</h2>
+  <p class="sub">Most money MCPs make you register an OAuth client before an agent can even list tools. Connect <code>${mcpUrl}</code> or call <code>POST ${restUrl}</code> immediately — custody stays on your Passkey, never on this server.</p>
+  <div class="g g3">
+    <div class="card"><h3><span>⚿</span>Passkey PRF</h3><p>Root keys are derived in your browser from WebAuthn PRF (Face ID, Touch ID, or smartcard) and never touch our server.</p></div>
+    <div class="card"><h3><span>⛉</span>2-of-4 Safe + 2-of-2 Arkade</h3><p>Base USDC lives in your Safe smart account and Bitcoin lives in Arkade/Lightning custody with per-transaction policy limits.</p></div>
+    <div class="card"><h3><span>◇</span>Zero-MCP REST + MCP</h3><p>Works natively in MCP clients (Claude, ChatGPT, Goose, Cursor) and over plain HTTP JSON (<code>${restUrl}</code>) with any agent that has <code>curl</code>.</p></div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <h2>Everything it pays &amp; connects to</h2>
+  <p class="sub">Real live rails — pay any machine-payable URL or crypto rail directly, and plug into live Nuri companion services.</p>
+  <ul class="rails">
+    <li><span class="ri">⚡</span><div><strong>Bitcoin Lightning &amp; Arkade</strong><p>Pay and receive real BOLT11 invoices (<code>lnbc…</code>), Lightning addresses (<code>user@domain</code>), L402, Lightning MPP, and <code>ark1…</code>.</p></div></li>
+    <li><span class="ri">₿</span><div><strong>On-chain Bitcoin</strong><p>Send to native SegWit <code>bc1…</code> addresses or <code>bitcoin:</code> BIP21 URIs using BTC decimals (e.g. <code>0.00025</code>) or sats.</p></div></li>
+    <li><span class="ri">◈</span><div><strong>Base USDC &amp; x402 / MPP</strong><p>Pay any HTTP <code>402 Payment Required</code> API (x402, EVM MPP) or <code>0x…</code> address on Base. Gas sponsored.</p></div></li>
+    <li><span class="ri">⇄</span><div><strong>Auto cross-rail</strong><p>Hold only Bitcoin? Pay a USDC x402 API. Hold only USDC? Pay a Lightning invoice or <code>bc1…</code> address. Converts automatically under the hood.</p></div></li>
+    <li><span class="ri">☎</span><div><strong>Paid Calls &amp; SMS</strong><p>Live companion at <a href="https://calls.nuri.com">calls.nuri.com</a> — outbound voice calls &amp; SMS paid per call via x402.</p></div></li>
+    <li><span class="ri">✉</span><div><strong>Agent Email &amp; Browser</strong><p>Pay $0.01 USDC via <code>wallet pay</code> for <a href="https://mail.paymentrequired.com">mail.paymentrequired.com</a> inboxes or <a href="https://browser.paymentrequired.com">browser.paymentrequired.com</a> Chromium sessions.</p></div></li>
+    <li><span class="ri">⛨</span><div><strong>Encrypted Agent Vault</strong><p><a href="https://vault.paymentrequired.com">vault.paymentrequired.com</a> — paid encrypted key-value storage verifying Base Safe owners (<code>isOwner</code> / ERC-1271).</p></div></li>
+    <li><span class="ri">▦</span><div><strong>Swaps &amp; Euro Banking MCPs</strong><p>Separate companion MCPs: <code>https://swapkit.nuri.com/mcp</code> (Monero XMR / SOL / ETH) and <code>https://banking.paymentrequired.com/mcp</code> (Euro IBAN &amp; debit card).</p></div></li>
+  </ul>
+</div></section>
+
+<section><div class="wrap">
+  <h2>One tool, four actions</h2>
+  <p class="sub">Tiny footprint (&lt;2.3% of a 64k context window) so even small 9B local models never get lost.</p>
+  <div class="tools">
+    <div class="tool"><code>balance</code><p>Omit <code>wallet_key</code> to start Passkey onboarding (returns both <code>create_url</code> &amp; <code>approval_url</code>). Pass <code>wallet_key</code> to inspect Base USDC + Bitcoin Lightning/Arkade balances.</p></div>
+    <div class="tool"><code>receive</code><p>Get Base USDC or Arkade deposit addresses, or mint a fresh Lightning BOLT11 funding invoice (<code>rail: "lightning", amount_sats</code>).</p></div>
+    <div class="tool"><code>pay</code><p>Universal pay: pass <code>to</code> as any <code>https://</code> 402 URL, <code>lnbc…</code>, <code>user@domain</code>, <code>bc1…</code>/<code>bitcoin:…</code>, <code>ark1…</code>, or <code>0x…</code>. Enforces <code>max_amount</code>/<code>max_sats</code> caps.</p></div>
+    <div class="tool"><code>history</code><p>Recent receipts across Base USDC, Lightning, Arkade, and cross-rail bridges with settlement proofs.</p></div>
+  </div>
+</div></section>
+
+<section id="for-agents" aria-labelledby="agents-heading"><div class="wrap">
+  <h2 id="agents-heading">Try it in one call</h2>
+  <p class="sub">No OAuth, no API key. Works via MCP (<code>${mcpUrl}</code>) or plain HTTP REST (<code>POST ${restUrl}</code>).</p>
   <div class="code-box">
     <code id="mcp-endpoint-code">${mcpUrl}</code>
     <button type="button" class="btn btn-secondary btn-sm" data-copy-text="mcp">Copy MCP URL</button>
@@ -469,20 +656,59 @@ a{color:var(--blue)}
     <code id="rest-endpoint-code">POST ${restUrl}</code>
     <button type="button" class="btn btn-secondary btn-sm" data-copy-text="curl">Copy cURL</button>
   </div>
-  <p class="muted">Agent instructions: <a href="${llmsUrl}">${llmsUrl}</a> · <a href="${skillUrl}">${skillUrl}</a> · <a href="${openapiUrl}">${openapiUrl}</a></p>
-  <ul>
-    <li><strong>If you have MCP:</strong> connect <code>${mcpUrl}</code> and call <code>wallet { "action": "balance" }</code> directly. Show the user both <code>create_url</code> (new Passkey) and <code>approval_url</code> (existing Passkey), then repeat with the same <code>request_id</code> after approval. Never send the user to <code>${base}/</code> when you have MCP.</li>
-    <li><strong>If you have HTTP / curl / bash (no MCP setup needed):</strong> call <code>POST ${restUrl}</code> with <code>{"action":"balance"}</code> (or <code>/v1/balance</code>, <code>/v1/receive</code>, <code>/v1/pay</code>, <code>/v1/history</code>) — same 4 actions, plain JSON, zero MCP config.</li>
-    <li><strong>If you are web-only with no tools yet (e.g. standard web ChatGPT):</strong> guide the user in 3 plain-English steps — open <code>${base}/</code> and click <strong>Create / Connect Agent Wallet</strong>, fund with Bitcoin Lightning or Base USDC, then add <code>${mcpUrl}</code> as a connector (Auth: None).</li>
-    <li><strong>4 actions:</strong> <code>balance</code>, <code>receive</code> (<code>lightning</code>, <code>usdc</code>, <code>arkade</code>), <code>pay</code> (any <code>https://</code> 402 API, <code>lnbc…</code>, <code>user@domain</code>, <code>bc1…</code>/<code>bitcoin:…</code>, <code>ark1…</code>, <code>0x…</code> with automatic cross-rail USDC &harr; BTC/Lightning), and <code>history</code>.</li>
-    <li><strong>Companion services:</strong> <a href="https://mail.paymentrequired.com">mail.paymentrequired.com</a> (x402 agent email), <a href="https://browser.paymentrequired.com">browser.paymentrequired.com</a> (x402 Chromium browser), <a href="https://vault.paymentrequired.com">vault.paymentrequired.com</a> (agent vault), <code>https://swapkit.nuri.com/mcp</code> (separate MCP for Monero XMR / SOL / ETH), and <code>https://banking.paymentrequired.com/mcp</code> (separate MCP for euro IBAN &amp; debit card).</li>
-  </ul>
-</section>
+  <div class="two" style="margin-top:20px">
+    <div>
+      <h4>curl (plain HTTP REST — zero MCP needed)</h4>
+      <pre><span class="c"># start Passkey setup (returns create_url + approval_url)</span>
+curl -sX POST <span class="s">${restUrl}</span> \\
+  -H <span class="s">'content-type: application/json'</span> \\
+  -d <span class="s">'{"action":<span class="k">"balance"</span>}'</span>
 
-<p class="footer">Non-custodial Nuri Passkey PRF + 2-of-4 Base Safe USDC + 2-of-2 Arkade Bitcoin/Lightning.</p>
-</main>
+<span class="c"># after approval, pass wallet_key (or Authorization: Bearer npw1_...)</span>
+curl -sX POST <span class="s">${base}/v1/pay</span> \\
+  -H <span class="s">'authorization: Bearer npw1_...'</span> \\
+  -H <span class="s">'content-type: application/json'</span> \\
+  -d <span class="s">'{"to":"https://mail.paymentrequired.com/v1/create_inbox","method":"POST","body":{"request_id":"p1"},"max_amount":"0.05","request_id":"p1"}'</span></pre>
+    </div>
+    <div>
+      <h4>then just talk to your agent</h4>
+      <ul class="pr">
+        <li>check my balance and get a 5000 sat Lightning invoice<span>&rarr; balance + receive (rail: "lightning")</span></li>
+        <li>pay $0.01 to create an agent email inbox<span>&rarr; pay https://mail.paymentrequired.com/v1/create_inbox</span></li>
+        <li>send 0.00025 BTC to bc1q…<span>&rarr; pay on-chain BTC (auto-bridges from USDC if needed)</span></li>
+        <li>read ${llmsUrl} and set up my wallet<span>&rarr; 1-URL onboarding for Claude, ChatGPT, Codex &amp; Goose</span></li>
+      </ul>
+    </div>
+  </div>
+  <ul class="agent-list">
+    <li><strong>MCP clients:</strong> connect <code>${mcpUrl}</code> and call <code>wallet { "action": "balance" }</code>. Show both <code>create_url</code> and <code>approval_url</code>, then repeat with the same <code>request_id</code>.</li>
+    <li><strong>HTTP / curl / bash agents:</strong> use <code>POST ${restUrl}</code> (or <code>/v1/balance</code>, <code>/v1/receive</code>, <code>/v1/pay</code>, <code>/v1/history</code>) — full OpenAPI 3.1.0 at <a href="${openapiUrl}">${openapiUrl}</a>.</li>
+    <li><strong>Web-only chat (no tools):</strong> guide the user to open <code>${base}/</code>, click <strong>Create / Connect Agent Wallet</strong>, fund with Lightning or Base USDC, then connect <code>${mcpUrl}</code> (Auth: None).</li>
+  </ul>
+</div></section>
+
+<footer><div class="wrap">
+  <div>Nuri Agent Wallet · Non-custodial Passkey PRF + 2-of-4 Base Safe USDC + 2-of-2 Arkade Bitcoin/Lightning.</div>
+  <div class="fl">
+    <a href="${llmsUrl}">llms.txt</a>
+    <a href="${skillUrl}">skill.md</a>
+    <a href="${openapiUrl}">openapi.json</a>
+    <a href="/healthz">health</a>
+    <a href="https://calls.nuri.com">calls.nuri.com</a>
+    <a href="https://nuri.com">nuri.com</a>
+  </div>
+</div></footer>
+
 <script>
 (() => {
+  const rootEl = document.documentElement;
+  const themeBtn = document.getElementById("tt");
+  if (themeBtn) {
+    themeBtn.addEventListener("click", () => {
+      const dark = rootEl.dataset.theme === "dark" || (!rootEl.dataset.theme && matchMedia("(prefers-color-scheme:dark)").matches);
+      rootEl.dataset.theme = dark ? "light" : "dark";
+    });
+  }
   const MCP_URL = ${JSON.stringify(mcpUrl)};
   const REST_URL = ${JSON.stringify(restUrl)};
   const AGENT_PROMPT = ${JSON.stringify(agentPrompt)};
