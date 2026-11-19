@@ -34,36 +34,28 @@ export function walletLlmsTxt(origin) {
   const { origin: base, host } = walletOriginInfo(origin);
   return `# Agent Wallet (${host})
 
-Non-custodial AI agent wallet for Base USDC (x402, EVM MPP) and Bitcoin Lightning/Arkade/on-chain \`bc1...\` (L402, Lightning MPP, BOLT11, \`user@domain\`). Auto cross-rail USDC <-> BTC/Lightning. Backed by Nuri Passkey PRF (Touch ID / Face ID / smartcard).
+Non-custodial Bitcoin Lightning + Base USDC wallet for AI agents in 60s. Passkey-secured (Face ID / Touch ID / smartcard), no seed phrase. Pays x402/L402 URLs, \`lnbc...\`, \`user@domain\`, \`bc1...\`/\`bitcoin:...\`, \`ark1...\`, and Base USDC \`0x...\`; auto-converts USDC <-> BTC/Lightning.
 
-## Path A — You have MCP
-1. Connect MCP endpoint (Streamable HTTP): \`${base}/mcp\`
-2. Call \`wallet { "action": "balance" }\` (no \`wallet_key\` yet).
-3. Show the person BOTH \`create_url\` (new Nuri Passkey) and \`approval_url\` (existing Passkey).
-4. Once they say "done", repeat \`wallet { "action": "balance", "request_id": "<same>" }\` to get deterministic \`wallet_key\` (\`npw1_...\`), then pass \`wallet_key\` on every call.
-- NEVER send the person to \`${base}/\` when you have MCP.
+## Setup (0 -> 1 -> first payment — pick the path that fits your tools)
+- **Path 1 — MCP (\`${base}/mcp\`):** Call \`wallet { "action": "balance" }\`. Show BOTH \`create_url\` (new Passkey) and \`approval_url\` (existing Passkey). After the person says "done", repeat with the same \`request_id\` to get \`wallet_key\` (\`npw1_...\`), save it, and pass it on every call. NEVER send the person to \`${base}/\` when you already have MCP.
+- **Path 2 — HTTP / curl / bash (zero MCP setup):** Plain JSON REST at \`POST ${base}/v1/wallet\` (or \`/v1/balance\`, \`/v1/receive\`, \`/v1/pay\`, \`/v1/history\`; OpenAPI: \`${base}/openapi.json\`). Start: \`curl -sX POST ${base}/v1/wallet -H 'content-type: application/json' -d '{"action":"balance"}'\`. Show BOTH \`create_url\` and \`approval_url\`, then repeat with \`request_id\` to get \`wallet_key\` (pass in body or \`Authorization: Bearer npw1_...\`).
+- **Path 3 — Web chat with no tools (e.g. standard web ChatGPT / claude.ai):** Give 3 plain-English steps (no jargon): (1) Open **${base}/** and click **"Create / Connect Agent Wallet"** (Passkey setup, Lightning/USDC funding, and 1-click $0.01 test payment right on the page). (2) Add **\`${base}/mcp\`** as a connector in AI settings (Auth: None), OR copy the prompt on ${base}/ into an MCP/curl client. (3) Ask me to pay any x402 API, Lightning invoice, or checkout.
 
-## Path B — No MCP connector yet (e.g. web ChatGPT)
-Tell the person EITHER:
-- (a) Add \`${base}/mcp\` as an MCP connector in their client, OR
-- (b) Open \`${base}/\` and click **"Create / Connect Agent Wallet"** (1-click Nuri Passkey flow right in the browser with addresses, Lightning funding invoice, and setup prompt).
+## 4 Actions (\`balance\`, \`receive\`, \`pay\`, \`history\`)
+- \`balance\`: \`{"action":"balance","wallet_key":"npw1_..."}\` (omit \`wallet_key\` to start; pass \`request_id\` after approval).
+- \`receive\`: \`{"action":"receive","wallet_key":"npw1_...","rail":"lightning"|"usdc"|"arkade","amount_sats":5000}\`
+- \`pay\` (402 URL): \`{"action":"pay","wallet_key":"npw1_...","to":"https://...","max_amount":"0.25","request_id":"p1"}\`
+- \`pay\` (address/invoice): \`{"action":"pay","wallet_key":"npw1_...","to":"lnbc..."|"user@domain"|"bc1..."|"bitcoin:..."|"ark1..."|"0x...","amount":"0.00025","request_id":"p2"}\`
+  - \`0x...\`: USDC in \`amount\`. \`bc1...\`/\`bitcoin:...\`: BTC decimal in \`amount\` (e.g. \`"0.00025"\` — never convert BTC to sats in your head) or \`amount_sats\`. \`user@domain\`/\`ark1...\`: \`amount_sats\`.
+  - Over-cap error: STOP, ask the person first; if approved, retry with a NEW \`request_id\` and higher \`max_amount\`/\`max_sats\`.
+- \`history\`: \`{"action":"history","wallet_key":"npw1_..."}\`
 
-## Tool: \`wallet\` (4 actions: \`balance\`, \`receive\`, \`pay\`, \`history\`)
-- Balance: \`wallet { "action": "balance", "wallet_key": "npw1_..." }\`
-- Receive: \`wallet { "action": "receive", "wallet_key": "npw1_...", "rail": "lightning"|"usdc"|"arkade", "amount_sats": 1000 }\`
-- Pay 402 API: \`wallet { "action": "pay", "wallet_key": "npw1_...", "to": "https://...", "max_amount": "0.25", "request_id": "p1" }\`
-- Pay invoice/address: \`wallet { "action": "pay", "wallet_key": "npw1_...", "to": "lnbc..."|"user@domain"|"bc1..."|"bitcoin:..."|"ark1..."|"0x...", "amount": "0.00025", "request_id": "p2" }\`
-  - \`0x...\`: USDC in \`amount\`. \`bc1...\`/\`bitcoin:...\`: pass BTC decimal directly in \`amount\` (e.g. \`"0.00025"\` — never convert BTC to sats in your head) or \`amount_sats\`. \`user@domain\`/\`ark1...\`: \`amount_sats\`.
-  - Over-cap error: STOP and ask the person first; if approved, retry with a NEW \`request_id\` and higher \`max_amount\`/\`max_sats\`.
-- History: \`wallet { "action": "history", "wallet_key": "npw1_..." }\`
-
-## Companion x402 / MCP Services
+## Companion Services
 - Agent email (\`0.01 USDC\` x402 via \`wallet pay\`): \`https://mail.paymentrequired.com/v1/create_inbox\`
 - Paid Chromium browser (\`0.01 USDC\` x402 via \`wallet pay\`): \`https://browser.paymentrequired.com/v1/browser/open\`
 - Encrypted agent vault: \`https://vault.paymentrequired.com\`
-- Monero XMR / SOL / ETH swaps (separate MCP): \`https://swapkit.nuri.com/mcp\`
-- Euro IBAN & debit card (separate MCP): \`https://banking.paymentrequired.com/mcp\`
-- NEVER pass Monero/XMR addresses or companion MCP URLs (\`swapkit.nuri.com/mcp\`, \`banking.paymentrequired.com/mcp\`) into \`wallet pay\`.
+- Monero XMR / SOL / ETH swaps (separate MCP — NEVER pass into \`wallet pay\`): \`https://swapkit.nuri.com/mcp\`
+- Euro IBAN & debit card (separate MCP — NEVER pass into \`wallet pay\`): \`https://banking.paymentrequired.com/mcp\`
 `;
 }
 
@@ -71,22 +63,204 @@ export function walletSkillMd(origin) {
   const { origin: base } = walletOriginInfo(origin);
   return `---
 name: agent-wallet
-description: Non-custodial AI agent wallet for Base USDC (x402, EVM MPP) and Bitcoin Lightning/Arkade/on-chain BTC (L402, Lightning MPP, BOLT11, user@domain) backed by Nuri Passkey PRF.
+description: Non-custodial AI agent wallet for Base USDC (x402, EVM MPP) and Bitcoin Lightning/Arkade/on-chain BTC (L402, Lightning MPP, BOLT11, user@domain) backed by Nuri Passkey PRF. Works via MCP or plain HTTP REST (${base}/v1/wallet).
 mcp_endpoint: ${base}/mcp
+rest_endpoint: ${base}/v1/wallet
+openapi: ${base}/openapi.json
 ---
 
 ${walletLlmsTxt(base)}`;
 }
 
+export function walletOpenApiJson(origin) {
+  const { origin: base, host } = walletOriginInfo(origin);
+  return {
+    openapi: "3.1.0",
+    info: {
+      title: `Agent Wallet (${host})`,
+      version: "2.0.0",
+      description:
+        "Non-custodial AI agent wallet for Base USDC (x402, EVM MPP) and Bitcoin Lightning/Arkade/on-chain BTC (L402, Lightning MPP, BOLT11, user@domain). Auto cross-rail USDC <-> BTC/Lightning. Pass wallet_key in the body or as Authorization: Bearer npw1_...",
+    },
+    servers: [{ url: base }],
+    paths: {
+      "/v1/wallet": {
+        post: {
+          operationId: "walletAction",
+          summary: "Run a wallet action (balance, receive, pay, or history)",
+          description:
+            "Start Passkey setup by calling action=balance without wallet_key, then repeat with the returned request_id after approval to obtain wallet_key (npw1_...).",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/WalletRequest" },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Wallet result",
+              content: { "application/json": { schema: { type: "object", additionalProperties: true } } },
+            },
+          },
+        },
+      },
+      "/v1/balance": {
+        post: {
+          operationId: "walletBalance",
+          summary: "Create/connect Passkey wallet or check Base USDC + Bitcoin Lightning/Arkade balance",
+          requestBody: {
+            required: false,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    wallet_key: { type: "string", description: "npw1_... key (omit on first call to start Passkey setup)" },
+                    request_id: { type: "string", description: "Repeat with the same request_id after Passkey approval" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Connect links (connect_required) or live balances (done)",
+              content: { "application/json": { schema: { type: "object", additionalProperties: true } } },
+            },
+          },
+        },
+      },
+      "/v1/receive": {
+        post: {
+          operationId: "walletReceive",
+          summary: "Get a Lightning invoice (sats), Base USDC address, or Arkade address",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    wallet_key: { type: "string" },
+                    rail: { type: "string", enum: ["lightning", "usdc", "arkade"] },
+                    amount_sats: { type: "integer", minimum: 100, description: "Required for rail=lightning" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Invoice or deposit address",
+              content: { "application/json": { schema: { type: "object", additionalProperties: true } } },
+            },
+          },
+        },
+      },
+      "/v1/pay": {
+        post: {
+          operationId: "walletPay",
+          summary: "Pay any x402/L402 URL, BOLT11 invoice, Lightning Address, bc1.../bitcoin: BTC, ark1..., or 0x... Base USDC",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["to"],
+                  properties: {
+                    wallet_key: { type: "string" },
+                    to: { type: "string", description: "https:// 402 URL, lnbc..., user@domain, bc1.../bitcoin:..., ark1..., or 0x..." },
+                    amount: { type: "string", description: "USDC for 0x..., or decimal BTC for bc1... (e.g. '0.00025')" },
+                    amount_sats: { type: "integer", description: "Sats for user@domain, ark1..., or bc1..." },
+                    max_amount: { type: "string", description: "Max USD cap for 402/invoice payments" },
+                    max_sats: { type: "integer", description: "Max sats cap for 402/invoice payments" },
+                    method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+                    headers: { type: "object", additionalProperties: { type: "string" } },
+                    body: { description: "JSON or string request body for 402 HTTP calls" },
+                    dry_run: { type: "boolean" },
+                    request_id: { type: "string", description: "Idempotency key (new id after raising a cap)" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Payment receipt and upstream response",
+              content: { "application/json": { schema: { type: "object", additionalProperties: true } } },
+            },
+          },
+        },
+      },
+      "/v1/history": {
+        post: {
+          operationId: "walletHistory",
+          summary: "List recent payments and receives",
+          requestBody: {
+            required: false,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    wallet_key: { type: "string" },
+                    limit: { type: "integer", minimum: 1, maximum: 100 },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Recent history entries",
+              content: { "application/json": { schema: { type: "object", additionalProperties: true } } },
+            },
+          },
+        },
+      },
+    },
+    components: {
+      schemas: {
+        WalletRequest: {
+          type: "object",
+          required: ["action"],
+          properties: {
+            action: { type: "string", enum: ["balance", "receive", "pay", "history"] },
+            wallet_key: { type: "string", description: "npw1_... key (or send Authorization: Bearer npw1_...)" },
+            request_id: { type: "string" },
+            rail: { type: "string", enum: ["lightning", "usdc", "arkade"] },
+            to: { type: "string" },
+            amount: { type: "string" },
+            amount_sats: { type: "integer" },
+            max_amount: { type: "string" },
+            max_sats: { type: "integer" },
+            method: { type: "string" },
+            headers: { type: "object", additionalProperties: { type: "string" } },
+            body: {},
+            dry_run: { type: "boolean" },
+            limit: { type: "integer" },
+          },
+        },
+      },
+    },
+  };
+}
+
 function walletIndexHtml(origin) {
   const { origin: base, host } = walletOriginInfo(origin);
   const mcpUrl = `${base}/mcp`;
+  const restUrl = `${base}/v1/wallet`;
+  const openapiUrl = `${base}/openapi.json`;
   const llmsUrl = `${base}/llms.txt`;
   const skillUrl = `${base}/skill.md`;
   const agentPrompt = [
-    `Connect the MCP server at ${mcpUrl} (instructions: ${llmsUrl}).`,
-    "Use the wallet tool (balance, receive, pay, history) for Base USDC (x402, EVM MPP) and Bitcoin Lightning/Arkade/on-chain BTC (L402, Lightning MPP, BOLT11, user@domain).",
-    'If no wallet_key is set yet, call wallet { "action": "balance" } and show me both create_url and approval_url.',
+    `Use my Agent Wallet at ${base} (instructions: ${llmsUrl}).`,
+    `MCP endpoint: ${mcpUrl} — or plain HTTP POST ${restUrl} (no MCP needed if you have curl/HTTP).`,
+    "Actions: balance, receive, pay, history (Base USDC + Bitcoin Lightning/Arkade/on-chain BTC with auto cross-rail).",
+    'If no wallet_key is set yet, call balance without wallet_key and show me both create_url and approval_url.',
   ].join("\n");
 
   return `<!doctype html>
@@ -151,16 +325,26 @@ a{color:var(--blue)}
   <nav class="nav" aria-label="Agent docs">
     <a href="${llmsUrl}">llms.txt</a>
     <a href="${skillUrl}">skill.md</a>
+    <a href="${openapiUrl}">openapi.json</a>
     <a href="#for-agents">For AI Agents</a>
   </nav>
 </header>
 
 <h1>Agent Wallet</h1>
-<p class="lead">Bitcoin Lightning + Base USDC wallet for AI agents. Non-custodial Nuri Passkey. Pays x402, L402, MPP, BOLT11, and on-chain BTC.</p>
+<p class="lead">Give your AI agent Bitcoin Lightning + Base USDC in 60 seconds. No seed phrase, no app install — secured by your Passkey.</p>
+
+<section class="card" aria-label="3-step setup">
+  <h2>3 steps from 0 to first payment</h2>
+  <ol style="margin:.4rem 0 0;padding-left:1.3rem">
+    <li><strong>Create or connect Passkey below</strong> — takes 15 seconds with Face ID, Touch ID, or a smartcard.</li>
+    <li><strong>Top up with Bitcoin Lightning or Base USDC</strong> — send even a few thousand sats or $1 USDC (auto-converts between rails).</li>
+    <li><strong>Connect your AI</strong> — coding agents (Claude Code, Codex, Goose, Cursor) work with <strong>zero MCP setup</strong> via plain HTTP (<code>${restUrl}</code>); web ChatGPT &amp; Claude use MCP (<code>${mcpUrl}</code>).</li>
+  </ol>
+</section>
 
 <section class="card" id="setup-widget" aria-labelledby="setup-heading">
-  <h2 id="setup-heading">Create / Connect Agent Wallet</h2>
-  <p class="muted">Non-custodial Nuri Passkey PRF (Touch ID, Face ID, or smartcard). Set up or connect your wallet right here, fund it over Base USDC or Bitcoin Lightning, and hand the MCP URL to your AI agent.</p>
+  <h2 id="setup-heading">1. Create / Connect Agent Wallet</h2>
+  <p class="muted">Non-custodial Nuri Passkey (Touch ID, Face ID, or smartcard). Set up or connect right here, top up, and test a real $0.01 agent payment.</p>
 
   <div id="error-box" class="banner banner-err hidden" role="alert"></div>
 
@@ -250,26 +434,46 @@ a{color:var(--blue)}
       <strong>Keep private:</strong> anyone with your <code>wallet_key</code> can spend within your Passkey policy limits. Only paste it into a trusted AI agent or MCP client.
     </div>
 
-    <h3>Use With Your AI Agent</h3>
+    <h3>3. Test First Payment ($0.01 x402 Agent Inbox)</h3>
+    <p class="muted">Once funded, verify everything end-to-end with one click — pays $0.01 USDC (or auto-bridges from Lightning) to create a live agent email inbox at <code>mail.paymentrequired.com</code>.</p>
+    <div class="row">
+      <button id="btn-test-pay" type="button" class="btn btn-secondary btn-sm">Test $0.01 Payment (Create Inbox)</button>
+      <span id="test-pay-status" class="muted"></span>
+    </div>
+    <div id="test-pay-result" class="banner banner-ok hidden" style="margin-top:.6rem"></div>
+
+    <hr class="sep">
+
+    <h3>4. Use With Your AI Agent</h3>
     <div class="row">
       <button type="button" class="btn btn-primary btn-sm" data-copy-text="mcp">Copy MCP URL</button>
       <button type="button" class="btn btn-secondary btn-sm" data-copy-text="prompt">Copy Agent Prompt</button>
+      <button type="button" class="btn btn-secondary btn-sm" data-copy-text="curl">Copy cURL Command</button>
     </div>
+    <p class="muted" style="margin-top:.6rem">
+      <strong>ChatGPT / Claude web:</strong> Settings &rarr; Connectors / Apps &rarr; Add <code>${mcpUrl}</code> (Auth: None).<br>
+      <strong>Claude Code / Codex / Goose / Cursor (no MCP needed):</strong> paste the Agent Prompt or call <code>POST ${restUrl}</code> directly with <code>wallet_key</code>.
+    </p>
   </div>
 </section>
 
 <section class="card" id="for-agents" aria-labelledby="agents-heading">
-  <h2 id="agents-heading">For AI Agents</h2>
-  <p>MCP endpoint (Streamable HTTP):</p>
+  <h2 id="agents-heading">For AI Agents (MCP or Plain HTTP)</h2>
+  <p>MCP endpoint (Streamable HTTP) — or plain JSON REST (zero MCP setup required):</p>
   <div class="code-box">
     <code id="mcp-endpoint-code">${mcpUrl}</code>
     <button type="button" class="btn btn-secondary btn-sm" data-copy-text="mcp">Copy MCP URL</button>
     <button type="button" class="btn btn-secondary btn-sm" data-copy-text="prompt">Copy Agent Prompt</button>
   </div>
-  <p class="muted">Agent instructions: <a href="${llmsUrl}">${llmsUrl}</a> · <a href="${skillUrl}">${skillUrl}</a></p>
+  <div class="code-box">
+    <code id="rest-endpoint-code">POST ${restUrl}</code>
+    <button type="button" class="btn btn-secondary btn-sm" data-copy-text="curl">Copy cURL</button>
+  </div>
+  <p class="muted">Agent instructions: <a href="${llmsUrl}">${llmsUrl}</a> · <a href="${skillUrl}">${skillUrl}</a> · <a href="${openapiUrl}">${openapiUrl}</a></p>
   <ul>
     <li><strong>If you have MCP:</strong> connect <code>${mcpUrl}</code> and call <code>wallet { "action": "balance" }</code> directly. Show the user both <code>create_url</code> (new Passkey) and <code>approval_url</code> (existing Passkey), then repeat with the same <code>request_id</code> after approval. Never send the user to <code>${base}/</code> when you have MCP.</li>
-    <li><strong>If you do not have an MCP connector yet (e.g. web ChatGPT):</strong> tell the user to either add <code>${mcpUrl}</code> as an MCP connector in their client, or open <code>${base}/</code> and click <strong>Create / Connect Agent Wallet</strong> above.</li>
+    <li><strong>If you have HTTP / curl / bash (no MCP setup needed):</strong> call <code>POST ${restUrl}</code> with <code>{"action":"balance"}</code> (or <code>/v1/balance</code>, <code>/v1/receive</code>, <code>/v1/pay</code>, <code>/v1/history</code>) — same 4 actions, plain JSON, zero MCP config.</li>
+    <li><strong>If you are web-only with no tools yet (e.g. standard web ChatGPT):</strong> guide the user in 3 plain-English steps — open <code>${base}/</code> and click <strong>Create / Connect Agent Wallet</strong>, fund with Bitcoin Lightning or Base USDC, then add <code>${mcpUrl}</code> as a connector (Auth: None).</li>
     <li><strong>4 actions:</strong> <code>balance</code>, <code>receive</code> (<code>lightning</code>, <code>usdc</code>, <code>arkade</code>), <code>pay</code> (any <code>https://</code> 402 API, <code>lnbc…</code>, <code>user@domain</code>, <code>bc1…</code>/<code>bitcoin:…</code>, <code>ark1…</code>, <code>0x…</code> with automatic cross-rail USDC &harr; BTC/Lightning), and <code>history</code>.</li>
     <li><strong>Companion services:</strong> <a href="https://mail.paymentrequired.com">mail.paymentrequired.com</a> (x402 agent email), <a href="https://browser.paymentrequired.com">browser.paymentrequired.com</a> (x402 Chromium browser), <a href="https://vault.paymentrequired.com">vault.paymentrequired.com</a> (agent vault), <code>https://swapkit.nuri.com/mcp</code> (separate MCP for Monero XMR / SOL / ETH), and <code>https://banking.paymentrequired.com/mcp</code> (separate MCP for euro IBAN &amp; debit card).</li>
   </ul>
@@ -280,6 +484,7 @@ a{color:var(--blue)}
 <script>
 (() => {
   const MCP_URL = ${JSON.stringify(mcpUrl)};
+  const REST_URL = ${JSON.stringify(restUrl)};
   const AGENT_PROMPT = ${JSON.stringify(agentPrompt)};
   const PENDING_KEY = "nuri_wallet_pending_v1";
   const CONNECTED_KEY = "nuri_wallet_connected_v1";
@@ -318,6 +523,9 @@ a{color:var(--blue)}
     keyDisplay: $("wallet-key-display"),
     btnReveal: $("btn-reveal-key"),
     btnCopyKey: $("btn-copy-key"),
+    btnTestPay: $("btn-test-pay"),
+    testPayStatus: $("test-pay-status"),
+    testPayResult: $("test-pay-result"),
   };
 
   let pending = readStore(PENDING_KEY);
@@ -618,6 +826,47 @@ a{color:var(--blue)}
     }
   }
 
+  function buildCurlSnippet() {
+    const key = (connected && connected.wallet_key) ? connected.wallet_key : "npw1_YOUR_WALLET_KEY";
+    const body = JSON.stringify({ action: "balance", wallet_key: key });
+    return "curl -sS -X POST " + REST_URL + " -H 'Content-Type: application/json' -d '" + body + "'";
+  }
+
+  async function runTestPayment() {
+    if (!connected || !connected.wallet_key) return;
+    showError("");
+    el.btnTestPay.disabled = true;
+    el.testPayResult.classList.add("hidden");
+    el.testPayResult.textContent = "";
+    el.testPayStatus.textContent = "Paying $0.01 USDC to mail.paymentrequired.com…";
+    try {
+      const data = await callWallet({
+        action: "pay",
+        wallet_key: connected.wallet_key,
+        target: "https://mail.paymentrequired.com/v1/create_inbox",
+        method: "POST",
+      });
+      if (data.status === "paid" || data.paid === true || data.http_status === 200 || data.response) {
+        const body = (data.response && typeof data.response === "object") ? data.response : data;
+        const email = body.address || body.email || (body.data && body.data.address) || "";
+        el.testPayStatus.textContent = "Paid $0.01!";
+        el.testPayResult.textContent = email
+          ? "First payment succeeded! Live agent inbox created: " + email
+          : "First payment succeeded! Your wallet can now pay any x402 API, Lightning invoice, or Bitcoin address.";
+        el.testPayResult.classList.remove("hidden");
+        refreshBalance(true);
+      } else {
+        el.testPayStatus.textContent = "";
+        showError(data.message || data.error || "Test payment did not complete. Make sure your wallet has at least $0.02 USDC or ~100 sats.");
+      }
+    } catch (err) {
+      el.testPayStatus.textContent = "";
+      showError(err.message || String(err));
+    } finally {
+      el.btnTestPay.disabled = false;
+    }
+  }
+
   el.btnCreate.addEventListener("click", () => beginOnboarding("create"));
   el.btnConnect.addEventListener("click", () => beginOnboarding("connect"));
   el.btnPollNow.addEventListener("click", () => pollOnce());
@@ -638,6 +887,8 @@ a{color:var(--blue)}
     writeStore(PENDING_KEY, null);
     writeStore(CONNECTED_KEY, null);
     el.lnBox.classList.add("hidden");
+    el.testPayResult.classList.add("hidden");
+    el.testPayStatus.textContent = "";
     showError("");
     render();
   });
@@ -650,6 +901,7 @@ a{color:var(--blue)}
   el.btnCopyKey.addEventListener("click", () => {
     if (connected && connected.wallet_key) copyText(connected.wallet_key, el.btnCopyKey);
   });
+  if (el.btnTestPay) el.btnTestPay.addEventListener("click", () => runTestPayment());
 
   document.addEventListener("click", (ev) => {
     const btn = ev.target && ev.target.closest ? ev.target.closest("button") : null;
@@ -661,6 +913,8 @@ a{color:var(--blue)}
       copyText(MCP_URL, btn);
     } else if (btn.dataset.copyText === "prompt") {
       copyText(AGENT_PROMPT, btn);
+    } else if (btn.dataset.copyText === "curl") {
+      copyText(buildCurlSnippet(), btn);
     }
   });
 
