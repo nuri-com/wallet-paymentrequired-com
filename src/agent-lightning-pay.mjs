@@ -224,7 +224,7 @@ export function parseLightningMppChallenges(headers) {
 /**
  * Detect which 402 payment protocol(s) a merchant response offers.
  */
-export function classifyHttp402Response({ headers, bodyText = "", prefer, decodeBolt11 }) {
+export function classifyHttp402Response({ headers, bodyText = "", prefer, decodeBolt11, balances = null }) {
   const candidates = [];
 
   const l402 = parseL402Challenge(headers);
@@ -337,6 +337,20 @@ export function classifyHttp402Response({ headers, bodyText = "", prefer, decode
     if (evm) return evm;
   }
 
+  // Dual-rail endpoint with no explicit `prefer`: pick whichever rail already holds
+  // sufficient native balance so we avoid unnecessary cross-rail swap fees.
+  if (balances && candidates.length > 1) {
+    const sats = BigInt(balances.sats ?? 0n);
+    const usdcUnits = BigInt(balances.usdcUnits ?? 0n);
+    const funded = candidates.find((c) => {
+      if (c.rail === "lightning") {
+        return c.amountSats !== null && sats >= BigInt(c.amountSats);
+      }
+      return c.amountUnits !== undefined && usdcUnits >= BigInt(c.amountUnits);
+    });
+    if (funded) return funded;
+  }
+
   return candidates[0];
 }
 
@@ -344,6 +358,7 @@ export function createPrfHttp402Payer({
   safeRuntime,
   arkadeRuntime,
   merchantFetch = defaultPinnedMerchantFetch,
+  ensureRailFunded = null,
 } = {}) {
   async function payHttpResource({
     walletRecord,
@@ -371,11 +386,24 @@ export function createPrfHttp402Payer({
     }
 
     const bodyText = isUtf8(first.bytes) ? first.bytes.toString("utf8") : "";
+    let prefBalances = null;
+    if (!prefer && safeRuntime && arkadeRuntime) {
+      const [uRes, aRes] = await Promise.allSettled([
+        safeRuntime.readUsdcBalanceUnits(walletRecord.safeAddress),
+        arkadeRuntime.readBalance(walletRecord),
+      ]);
+      prefBalances = {
+        usdcUnits: uRes.status === "fulfilled" ? uRes.value : 0n,
+        sats: aRes.status === "fulfilled" ? aRes.value.sats : 0n,
+      };
+    }
+
     const selected = classifyHttp402Response({
       headers: first.headers,
       bodyText,
       prefer,
       decodeBolt11: arkadeRuntime?.decodeBolt11,
+      balances: prefBalances,
     });
     if (!selected) {
       throw new Error("no_payable_402_challenge");
@@ -383,12 +411,31 @@ export function createPrfHttp402Payer({
 
     if (dryRun) {
       if (selected.rail === "lightning") {
-        const bal = await arkadeRuntime.readBalance(walletRecord);
+        const bal = prefBalances ? { sats: prefBalances.sats } : await arkadeRuntime.readBalance(walletRecord);
+        const nativePayable =
+          selected.amountSats !== null ? bal.sats >= BigInt(selected.amountSats) : false;
+        let crossRail = false;
+        if (!nativePayable && safeRuntime && ensureRailFunded) {
+          const usdcBal =
+            prefBalances?.usdcUnits ??
+            (await safeRuntime.readUsdcBalanceUnits(walletRecord.safeAddress).catch(() => 0n));
+          if (usdcBal > 0n) crossRail = true;
+        }
+        const overCap =
+          maxSats !== undefined &&
+          maxSats !== null &&
+          selected.amountSats !== null &&
+          BigInt(selected.amountSats) > BigInt(maxSats);
         return {
           status: "done",
           dry_run: true,
           protocol: selected.kind,
           rail: "lightning",
+          ...(crossRail ? { cross_rail: true, funded_from: "usdc" } : {}),
+          ...(selected.amountSats !== null
+            ? { price: { amount: String(selected.amountSats), currency: "sats" } }
+            : {}),
+          over_cap: overCap,
           quote: {
             protocol: selected.kind,
             invoice: selected.invoice,
@@ -397,25 +444,73 @@ export function createPrfHttp402Payer({
             expires_at: selected.expiresAt,
           },
           available_sats: bal.sats.toString(),
-          payable:
-            selected.amountSats !== null ? bal.sats >= BigInt(selected.amountSats) : false,
+          payable: (nativePayable || crossRail) && !overCap,
         };
       }
-      const usdcBal = await safeRuntime.readUsdcBalanceUnits(walletRecord.safeAddress);
+      const usdcBal =
+        prefBalances?.usdcUnits ??
+        (await safeRuntime.readUsdcBalanceUnits(walletRecord.safeAddress));
+      const nativePayable = usdcBal >= BigInt(selected.amountUnits);
+      let crossRail = false;
+      if (!nativePayable && arkadeRuntime && ensureRailFunded) {
+        const arkBal =
+          prefBalances?.sats ??
+          (await arkadeRuntime.readBalance(walletRecord).then((b) => b.sats).catch(() => 0n));
+        if (arkBal > 0n) crossRail = true;
+      }
+      const overCap =
+        maxAmountUnits !== undefined &&
+        maxAmountUnits !== null &&
+        BigInt(selected.amountUnits) > BigInt(maxAmountUnits);
       const q = selected.kind === "x402" ? quoteOffer(selected.offer) : quoteMppOffer(selected.offer);
       return {
         status: "done",
         dry_run: true,
         protocol: selected.kind,
         rail: "usdc",
+        ...(crossRail ? { cross_rail: true, funded_from: "arkade" } : {}),
+        amount_units: selected.amountUnits,
+        over_cap: overCap,
         quote: q,
         available_units: usdcBal.toString(),
-        payable: usdcBal >= BigInt(selected.amountUnits),
+        payable: (nativePayable || crossRail) && !overCap,
       };
     }
 
     if (selected.rail === "lightning") {
       if (!arkadeRuntime) throw new Error("arkade_runtime_unavailable");
+      if (
+        maxSats !== undefined &&
+        maxSats !== null &&
+        selected.amountSats !== null &&
+        BigInt(selected.amountSats) > BigInt(maxSats)
+      ) {
+        const err = new Error("invoice_exceeds_max_sats");
+        err.code = "over_max_amount";
+        err.invoiceSats = selected.amountSats;
+        err.maxSats = Number(maxSats);
+        throw err;
+      }
+
+      let bridged = null;
+      if (ensureRailFunded && selected.amountSats !== null) {
+        const currentSats =
+          prefBalances?.sats ??
+          (await arkadeRuntime.readBalance(walletRecord).then((b) => b.sats).catch(() => 0n));
+        const feeBuffer = BigInt(Math.max(100, Math.ceil(selected.amountSats * 0.03)));
+        if (currentSats < BigInt(selected.amountSats) + feeBuffer) {
+          bridged = await ensureRailFunded({
+            walletRecord,
+            secrets,
+            targetRail: "lightning",
+            neededSats: Number(BigInt(selected.amountSats) + feeBuffer),
+            maxAmountUnits,
+            maxSats,
+            opId,
+          });
+        }
+      }
+
       const paidLn = await arkadeRuntime.payBolt11Invoice({
         walletRecord,
         agentBtcPrivHex: secrets.agentBtcPrivHex,
@@ -428,6 +523,7 @@ export function createPrfHttp402Payer({
           status: "pending",
           protocol: selected.kind,
           rail: "lightning",
+          ...(bridged ? { funded_from: "usdc", bridged } : {}),
           payment_hash: paidLn.paymentHash,
           amount_sats: paidLn.amountSats,
           fee_sats: paidLn.feeSats,
@@ -454,6 +550,7 @@ export function createPrfHttp402Payer({
         paid: true,
         protocol: selected.kind,
         rail: "lightning",
+        ...(bridged ? { funded_from: "usdc", bridged } : {}),
         http_status: second.status,
         amount_sats: paidLn.amountSats,
         fee_sats: paidLn.feeSats,
@@ -477,6 +574,24 @@ export function createPrfHttp402Payer({
       err.invoiceUnits = selected.amountUnits;
       err.maxUnits = String(maxAmountUnits);
       throw err;
+    }
+
+    let bridged = null;
+    if (ensureRailFunded) {
+      const currentUsdc =
+        prefBalances?.usdcUnits ??
+        (await safeRuntime.readUsdcBalanceUnits(walletRecord.safeAddress).catch(() => 0n));
+      if (currentUsdc < BigInt(selected.amountUnits)) {
+        bridged = await ensureRailFunded({
+          walletRecord,
+          secrets,
+          targetRail: "usdc",
+          neededUsdcUnits: BigInt(selected.amountUnits),
+          maxAmountUnits,
+          maxSats,
+          opId,
+        });
+      }
     }
 
     const safeWalletRow = {
@@ -538,6 +653,7 @@ export function createPrfHttp402Payer({
         paid: true,
         protocol: "x402",
         rail: "usdc",
+        ...(bridged ? { funded_from: "arkade", bridged } : {}),
         http_status: second.status,
         amount_units: selected.offer.amount,
         asset: BASE_USDC_ADDRESS,
@@ -590,6 +706,7 @@ export function createPrfHttp402Payer({
       paid: true,
       protocol: "mpp",
       rail: "usdc",
+      ...(bridged ? { funded_from: "arkade", bridged } : {}),
       http_status: second.status,
       amount_units: selected.offer.amount,
       asset: selected.offer.asset,

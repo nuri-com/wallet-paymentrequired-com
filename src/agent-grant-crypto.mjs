@@ -251,6 +251,11 @@ export function createConnectGrantClient({
 
   return {
     origin,
+    async startWalletCreate({ returnUrl, signal } = {}) {
+      return await callMcpTool("wallet_create_start", {
+        ...(returnUrl ? { return_url: returnUrl } : {}),
+      }, { signal });
+    },
     async startAgentGrant({ replyPubkey, index = 0, policy = {}, credIdB64u, expectedEoa, timeoutMs, signal }) {
       return await callMcpTool("wallet_sign_start", {
         operation: "agent_grant",

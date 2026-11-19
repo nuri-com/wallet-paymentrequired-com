@@ -121,30 +121,28 @@ function unconfirmedSentence(reason, noun) {
 
 export const WALLET_TOOL = {
   name: "wallet",
-  title: "The agent's own USDC & Bitcoin Lightning wallet",
-  description: "The AGENT's own dual-rail Base USDC + Bitcoin Lightning/Arkade wallet (not the person's euro bank): balance, receive, pay, history. Connect once with a Nuri Passkey on connect.nuri.com; send wallet_key on every call.",
+  title: "Agent USDC + Bitcoin/Lightning wallet",
+  description: "Agent's own Base USDC + Bitcoin Lightning/Arkade/on-chain wallet (4 actions: balance, receive, pay, history). First time: call balance with no wallet_key to create or connect a Nuri Passkey wallet. Cross-rail USDC <-> Bitcoin/Lightning converts automatically.",
   inputSchema: {
     type: "object", additionalProperties: false, required: ["action"],
     properties: {
-      action: { type: "string", enum: ["balance", "receive", "pay", "history"], description: "balance: Base USDC + Bitcoin/Arkade sats & addresses (or connect a Nuri Passkey wallet when called with no wallet_key / new:true). receive: get a Lightning BOLT11 invoice, Arkade address, or Base USDC address. pay: pay any HTTP 402 API (x402, EVM MPP, L402, Lightning MPP), BOLT11 invoice, Lightning Address, Arkade address, or 0x Base USDC address. history: past payments and receives." },
-      wallet_key: { type: "string", pattern: TOKEN.source, description: "Agent wallet bearer credential (`npw1_...` or legacy key). Send on every call." },
-      session: { type: "string", pattern: SESSION_PATTERN, description: "Optional legacy session credential." },
-      rail: { type: "string", enum: ["lightning", "arkade", "usdc"], description: "For receive: lightning (BOLT11 invoice), arkade (2-of-2 Arkade address), or usdc (2-of-4 Base Safe address)." },
-      url: { type: "string", maxLength: 4096, description: "For pay: paid HTTPS URL (x402, EVM MPP, L402, or Lightning MPP)." },
-      invoice: { type: "string", maxLength: 4096, description: "For pay: BOLT11 Lightning invoice (`lnbc...`)." },
-      to: { type: "string", maxLength: 512, description: "For pay: `0x...` Base USDC address, `ark1...` Arkade address, or `user@domain` Lightning Address." },
-      amount: { type: "string", pattern: AMOUNT.source, description: "USDC decimal amount like 0.25 (for Base USDC sends or legacy fund)." },
-      amount_sats: { type: "integer", minimum: 1, description: "Bitcoin satoshis amount (for Lightning invoice receive, Arkade sends, or Lightning Address sends)." },
-      max_amount: { type: "string", pattern: AMOUNT.source, description: "Maximum Base USDC this one HTTP 402 request may cost, like 0.05." },
-      max_sats: { type: "integer", minimum: 1, description: "Maximum satoshis (including routing fee) a Lightning / L402 / Lightning MPP payment may cost." },
-      prefer: { type: "string", maxLength: 64, description: "For pay on dual-rail 402 endpoints: lightning, l402, mpp:lightning, usdc, x402, or mpp:evm." },
-      dry_run: { type: "boolean", description: "For pay: inspect the HTTP 402 price and rail without signing or paying." },
-      method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"], description: "For pay: HTTP method (default GET)." },
-      body: { description: "For pay: HTTP request body." },
-      request_id: { type: "string", minLength: 1, maxLength: 64, description: "Idempotency label for this step. Reuse unchanged after Passkey approval or retry; use a NEW request_id after an over-cap error." },
-      new: { type: "boolean", description: "true starts a fresh Nuri Passkey agent_grant ceremony." },
-      index: { type: "integer", minimum: 0, maximum: 1000000, description: "Deterministic agent wallet slot index (default 0)." },
-      chain: { type: "string", description: "base (default)." },
+      action: { type: "string", enum: ["balance", "receive", "pay", "history"], description: "balance: show USDC + Bitcoin sats & addresses (or create/connect a Nuri Passkey wallet when wallet_key is omitted). receive: get Base USDC address, Arkade BTC address, or Lightning BOLT11 invoice. pay: pay any https:// 402 API (x402/L402/MPP), BOLT11 invoice, user@domain, bc1.../bitcoin: BTC address, ark1... Arkade, or 0x... Base USDC. history: past payments and receives." },
+      wallet_key: { type: "string", pattern: TOKEN.source, description: "Wallet key (npw1_...) returned after Passkey approval. Send on every call once connected." },
+      to: { type: "string", maxLength: 4096, description: "For pay: destination — https:// paid API, lnbc... BOLT11 invoice, user@domain Lightning Address, bc1.../bitcoin:... on-chain Bitcoin, ark1... Arkade, or 0x... Base USDC." },
+      url: { type: "string", maxLength: 4096, description: "Optional alias for to when paying a paid https:// URL." },
+      invoice: { type: "string", maxLength: 4096, description: "Optional alias for to when paying a BOLT11 lnbc... invoice." },
+      rail: { type: "string", enum: ["usdc", "lightning", "arkade"], description: "For receive: usdc (Base USDC address), lightning (BOLT11 invoice; needs amount_sats, includes small routing fee), or arkade (Arkade BTC address)." },
+      amount: { type: "string", pattern: "^(0|[1-9][0-9]{0,71})(\\.[0-9]{1,8})?$", description: "For 0x... Base USDC sends: decimal USDC (e.g. \"1.50\"). For Bitcoin (bc1..., ark1..., user@domain), prefer amount_sats (or BTC decimal here for bc1... only)." },
+      amount_sats: { type: "integer", minimum: 1, description: "Whole satoshis (for receive rail=lightning, or pay to user@domain, ark1..., or bc1...; omit for lnbc... invoices)." },
+      max_amount: { type: "string", pattern: AMOUNT.source, description: "Max Base USDC this one pay call may cost, e.g. \"0.25\"." },
+      max_sats: { type: "integer", minimum: 1, description: "Max satoshis (incl. fees) this one Lightning / L402 / BTC pay may cost." },
+      prefer: { type: "string", maxLength: 64, description: "Optional on dual-rail 402 URLs: lightning, l402, mpp:lightning, usdc, x402, or mpp:evm (omitted = auto-pick funded rail)." },
+      dry_run: { type: "boolean", description: "For pay on https:// URLs: inspect 402 price without paying." },
+      method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"], description: "For pay on https:// URLs: HTTP method (default GET)." },
+      body: { description: "For pay on https:// URLs: HTTP request body." },
+      request_id: { type: "string", minLength: 1, maxLength: 64, description: "Short idempotency label (1-64 chars). Reuse unchanged on retry or after Passkey approval; use a NEW request_id after an over-cap error." },
+      new: { type: "boolean", description: "true starts a fresh Nuri Passkey create/connect ceremony." },
+      index: { type: "integer", minimum: 0, maximum: 1000000, description: "Deterministic wallet slot index (default 0; use 1, 2... for separate agent wallets under one Passkey)." },
       limit: { type: "integer", minimum: 1, maximum: 50, description: "For history: max entries (default 25)." },
     },
   },
@@ -162,8 +160,12 @@ export const WALLET_TOOL = {
       address: { type: "string", description: "2-of-4 Base Safe USDC address." },
       arkade_address: { type: "string", description: "2-of-2 Nuri Arkade off-chain Bitcoin address (`ark1...`)." },
       owner_address: { type: "string", description: "Main Nuri wallet EOA that granted this agent wallet." },
-      wallet_key: { type: "string", description: "Returned once on connect approval. Save and send on every call." },
+      wallet_key: { type: "string", description: "Deterministic wallet key (`npw1_...`). Save and send on every call." },
       rail: { type: "string" },
+      funded_from: { type: "string", description: "Source rail when cross-rail auto-conversion paid the target." },
+      cross_rail: { type: "boolean" },
+      swap_id: { type: "string" },
+      bridged: { type: "object" },
       protocol: { type: "string" },
       invoice: { type: "string", description: "BOLT11 Lightning invoice (`lnbc...`)." },
       payment_hash: { type: "string" },
@@ -182,7 +184,8 @@ export const WALLET_TOOL = {
       services: { type: "array", items: { type: "object" } },
       total: { type: ["integer", "null"] },
       sources: { type: "object" },
-      approval_url: { type: "string", format: "uri", description: "Nuri Passkey approval link on connect.nuri.com (or legacy approval link)." },
+      create_url: { type: "string", format: "uri", description: "Create a brand-new Nuri Passkey wallet (auto-continues to approval)." },
+      approval_url: { type: "string", format: "uri", description: "Connect/approve with an existing Nuri Passkey on connect.nuri.com." },
       request_id: { type: "string" },
       session: { type: "string", pattern: SESSION_PATTERN },
       funded: { type: "boolean" },
@@ -251,8 +254,10 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
   const chainNames = Object.keys(gatewayChains);
   const homeChainName = chainNames.find(name => gatewayChains[name] === chainId) ?? "the home chain";
   const chainNameOf = id => { const n = chainNames.find(name => gatewayChains[name] === id); return n ?? `eip155:${id}`; };
-  WALLET_TOOL.inputSchema.properties.chain.enum = chainNames;
-  WALLET_TOOL.inputSchema.properties.chain.description = `${chainNames.join(", ")}; default ${homeChainName}.`;
+  if (WALLET_TOOL.inputSchema.properties.chain) {
+    WALLET_TOOL.inputSchema.properties.chain.enum = chainNames;
+    WALLET_TOOL.inputSchema.properties.chain.description = `${chainNames.join(", ")}; default ${homeChainName}.`;
+  }
   // The tool description stays static and short: Gateway use is on the gateway, bridge and chain
   // fields, and the chain names are the enum (short tool texts, 2026-09-27).
 
@@ -929,6 +934,20 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
         !isPrfWalletKey(args.wallet_key) &&
         !(typeof args.wallet_key === "string" && LEGACY_TOKEN.test(args.wallet_key)) &&
         !args.session;
+
+      if (
+        prf.configured &&
+        !args.wallet_key &&
+        !args.session &&
+        ["receive", "pay", "history", "send"].includes(args.action)
+      ) {
+        return {
+          ok: false,
+          status: "connect_required",
+          error: "No wallet_key yet. Call wallet balance first to create or connect a Nuri Passkey wallet.",
+          next: "Call wallet {action: \"balance\"}.",
+        };
+      }
 
       if (isPrfWalletKey(args.wallet_key) || usePrfOnboarding || (prf.configured && args.action === "balance" && prf.hasPendingGrantSession(args.request_id))) {
         switch (args.action) {

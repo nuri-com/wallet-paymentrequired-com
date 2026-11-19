@@ -24,9 +24,19 @@ import {
   isPrfWalletKey,
   openPrfAgentWalletStore,
 } from "./prf-agent-wallet-store.mjs";
+import {
+  btcDecimalToSats,
+  createSwapkitClient,
+  extractProviderMinFromRoute,
+  isMoneroAddress,
+  isOnchainBtcAddress,
+  parseBip21Uri,
+  usdcAmountToUnitsCeil,
+} from "./agent-swapkit-v2.mjs";
 import { decimalToUnits, unitsToDecimal } from "./wallet-units.mjs";
 
 const ETH_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+const HTTPS_URL_RE = /^https:\/\/.+/i;
 const BOLT11_RE = /^(?:lightning:)?ln(?:bc|tb|bcrt|tbs)[0-9a-z]+$/i;
 const LN_ADDRESS_RE = /^(?:lightning:)?[a-z0-9._+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
 const DECIMAL_AMOUNT_RE = /^(0|[1-9][0-9]{0,71})(\.[0-9]{1,6})?$/;
@@ -46,8 +56,9 @@ function formatSatsAsBtc(sats) {
 }
 
 function parsePositiveSats(value, label = "amount_sats") {
-  if (value === undefined || value === null) return undefined;
-  const n = Number(value);
+  if (value === undefined || value === null || value === "") return undefined;
+  const clean = typeof value === "string" ? value.trim() : value;
+  const n = typeof clean === "string" && /^\d+$/.test(clean) ? Number(clean) : Number(clean);
   if (!Number.isSafeInteger(n) || n <= 0) {
     throw new Error(`${label} must be a positive whole number of satoshis.`);
   }
@@ -55,11 +66,29 @@ function parsePositiveSats(value, label = "amount_sats") {
 }
 
 function parseUsdcUnits(value, label = "amount") {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== "string" || !DECIMAL_AMOUNT_RE.test(value.trim())) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const raw =
+    typeof value === "number" && Number.isFinite(value)
+      ? value.toFixed(6).replace(/\.?0+$/, "")
+      : typeof value === "string"
+        ? value.trim()
+        : null;
+  if (raw === null || !DECIMAL_AMOUNT_RE.test(raw)) {
     throw new Error(`${label} must be written like 0.25 or 10.`);
   }
-  return decimalToUnits(value.trim(), 6);
+  return decimalToUnits(raw, 6);
+}
+
+function toSafeWalletRow(wallet) {
+  return {
+    cred_id_b64u: wallet.credIdB64u,
+    slot_index: wallet.slotIndex,
+    main_eoa: wallet.mainEoa,
+    passkey_signer_address: wallet.passkeySignerAddress,
+    agent_eoa: wallet.agentEthEoa,
+    cosigner_eoa: wallet.cosignerEoa,
+    safe_address: wallet.safeAddress,
+  };
 }
 
 export function isPrfCustodyConfigured(env = process.env) {
@@ -80,9 +109,12 @@ export function createPrfWalletCoordinator({
   cosignerClient,
   safeRuntime,
   arkadeRuntime,
+  swapkitClient,
   http402Payer,
   merchantFetch,
   fetchImpl = fetch,
+  bridgeTimeoutMs = 45_000,
+  bridgePollIntervalMs = 2_000,
 } = {}) {
   const configured = isPrfCustodyConfigured(env) || Boolean(cosignerClient);
   let store = null;
@@ -90,7 +122,9 @@ export function createPrfWalletCoordinator({
   let cosigner = cosignerClient || null;
   let safe = safeRuntime || null;
   let arkade = arkadeRuntime || null;
+  let swapkit = swapkitClient || null;
   let payer = http402Payer || null;
+  const createUrlByRequest = new Map();
 
   function ensureStore() {
     if (!store) {
@@ -144,11 +178,238 @@ export function createPrfWalletCoordinator({
     return arkade;
   }
 
+  function ensureSwapkit() {
+    if (!swapkit) {
+      swapkit = createSwapkitClient({
+        url: env.SWAPKIT_MCP_URL,
+        fetchImpl,
+      });
+    }
+    return swapkit;
+  }
+
+  async function bridgeUsdcToArkade({ walletRecord, secrets, neededSats, opId }) {
+    const db = ensureStore();
+    const safeRow = toSafeWalletRow(walletRecord);
+    const usdcBal = await ensureSafe().readUsdcBalanceUnits(walletRecord.safeAddress);
+    if (usdcBal <= 0n) {
+      throw new Error("insufficient_balance_usdc_and_btc");
+    }
+
+    const sk = ensureSwapkit();
+    const route = await sk.routeSwap({
+      from: "USDC_BASE",
+      to: "BTC_LN",
+      sats: neededSats,
+      side: "settle",
+      liveOnly: true,
+    });
+
+    let targetSats = neededSats;
+    if (!route?.bestExecutable) {
+      const minInfo = extractProviderMinFromRoute(route, "USDC_BASE");
+      const minUsdc = minInfo && minInfo.unit === "USDC" ? minInfo.min : 5;
+      const bridgeUsdc = Math.ceil(minUsdc * 1.1 * 100) / 100;
+      const minUnits = usdcAmountToUnitsCeil(bridgeUsdc);
+      if (usdcBal < minUnits) {
+        throw new Error(
+          `insufficient_usdc_for_cross_rail_bridge:need_${bridgeUsdc}_usdc_have_${unitsToDecimal(String(usdcBal), 6)}`,
+        );
+      }
+      const depRoute = await sk.routeSwap({
+        from: "USDC_BASE",
+        to: "BTC_LN",
+        amount: bridgeUsdc,
+        side: "deposit",
+        liveOnly: true,
+      });
+      const q = depRoute?.bestExecutable || depRoute?.best;
+      if (!q?.settleAmount) throw new Error("cross_rail_usdc_to_ln_unavailable");
+      targetSats = Math.max(neededSats, btcDecimalToSats(q.settleAmount));
+    }
+
+    // Mint our own Arkade Lightning receive invoice so bridged sats land in our 2-of-2 Arkade custody.
+    const selfRecv = await ensureArkade().createLightningReceive({
+      walletRecord,
+      agentBtcPrivHex: secrets.agentBtcPrivHex,
+      amountSats: targetSats,
+    });
+    db.saveLightningReceive({
+      rfqId: selfRecv.rfqId,
+      walletId: walletRecord.walletId,
+      requestId: `${opId}:bridge-recv`,
+      paymentHash: selfRecv.paymentHash,
+      invoice: selfRecv.invoice,
+      payAmountSats: selfRecv.payAmountSats,
+      expectedAmountSats: selfRecv.expectedAmountSats,
+      feeSats: selfRecv.feeSats,
+      expiresAt: selfRecv.expiresAt,
+      lockupAddress: selfRecv.lockupAddress,
+      swapPkScriptHex: selfRecv.swapPkScriptHex,
+      payoutAddress: selfRecv.payoutAddress,
+      quoteJson: selfRecv.quoteJson,
+    });
+
+    const swap = await sk.createSwap({
+      from: "USDC_BASE",
+      to: "BTC_LN",
+      sats: selfRecv.payAmountSats,
+      side: "settle",
+      settleTarget: selfRecv.invoice,
+      refundAddress: walletRecord.safeAddress,
+      walletCapabilities: ["send_asset"],
+      customOrderId: `${opId}:u2a`,
+    });
+    if (!swap.sendToAddress || swap.depositAmount == null) {
+      throw new Error("cross_rail_swap_missing_deposit_address");
+    }
+    const depositUnits = usdcAmountToUnitsCeil(swap.depositAmount);
+    if (usdcBal < depositUnits) {
+      throw new Error(
+        `insufficient_usdc_for_cross_rail_bridge:need_${unitsToDecimal(String(depositUnits), 6)}_have_${unitsToDecimal(String(usdcBal), 6)}`,
+      );
+    }
+
+    const sent = await ensureSafe().transferUsdc({
+      walletRecord: safeRow,
+      agentEthPrivateKeyHex: secrets.agentEthPrivHex,
+      to: getAddress(swap.sendToAddress),
+      amountUnits: depositUnits,
+      opId: `${opId}:bridge-usdc`,
+    });
+
+    const deadline = Date.now() + bridgeTimeoutMs;
+    let claimedSats = null;
+    while (Date.now() <= deadline) {
+      try {
+        const claim = await ensureArkade().claimLightningReceive({
+          walletRecord,
+          agentBtcPrivHex: secrets.agentBtcPrivHex,
+          receiveRecord: {
+            rfqId: selfRecv.rfqId,
+            expectedAmountSats: selfRecv.expectedAmountSats,
+            quoteJson: selfRecv.quoteJson,
+          },
+        });
+        if (claim.status === "claimed") {
+          claimedSats = claim.claimedSats ?? selfRecv.expectedAmountSats;
+          db.markLightningReceiveClaimed(selfRecv.rfqId, {
+            claimTxid: claim.claimTxid || null,
+            claimedSats,
+          });
+          break;
+        }
+      } catch {
+        // Wait for swap settlement and VHTLC lockup.
+      }
+      await new Promise((r) => setTimeout(r, bridgePollIntervalMs));
+    }
+    if (claimedSats === null) {
+      throw new Error(`cross_rail_bridge_pending:swap_${swap.swapId || "unknown"}`);
+    }
+    return {
+      from: "usdc",
+      to: "arkade",
+      provider: swap.provider,
+      swap_id: swap.swapId,
+      deposit_usdc: unitsToDecimal(String(depositUnits), 6),
+      deposit_tx: sent.txHash,
+      received_sats: claimedSats,
+    };
+  }
+
+  async function bridgeArkadeToUsdc({ walletRecord, secrets, neededUsdcUnits, opId }) {
+    const arkBal = await ensureArkade().readBalance(walletRecord);
+    if (arkBal.sats <= 0n) {
+      throw new Error("insufficient_balance_usdc_and_btc");
+    }
+
+    const prevUsdc = await ensureSafe().readUsdcBalanceUnits(walletRecord.safeAddress).catch(() => 0n);
+    const neededUsdcNum = Number(unitsToDecimal(String(neededUsdcUnits), 6));
+    const sk = ensureSwapkit();
+    const route = await sk.routeSwap({
+      from: "BTC_LN",
+      to: "USDC_BASE",
+      amount: neededUsdcNum,
+      side: "settle",
+      liveOnly: true,
+    });
+
+    let bridgeUsdc = neededUsdcNum;
+    if (!route?.bestExecutable) {
+      const minInfo = extractProviderMinFromRoute(route, "BTC_LN");
+      const rate = route?.unavailable?.find?.((u) => u?.limits?.rate)?.limits?.rate;
+      const estimatedMinUsdc =
+        minInfo && rate ? Math.ceil((minInfo.min / Number(rate)) * 1.15 * 100) / 100 : 5.5;
+      bridgeUsdc = Math.max(neededUsdcNum, Math.max(5.5, estimatedMinUsdc));
+    }
+
+    const swap = await sk.createSwap({
+      from: "BTC_LN",
+      to: "USDC_BASE",
+      amount: bridgeUsdc,
+      side: "settle",
+      settleTarget: walletRecord.safeAddress,
+      walletCapabilities: ["pay_lightning_invoice"],
+      customOrderId: `${opId}:a2u`,
+    });
+    if (!swap.payInvoice) {
+      throw new Error("cross_rail_swap_missing_lightning_invoice");
+    }
+    const paidLn = await ensureArkade().payBolt11Invoice({
+      walletRecord,
+      agentBtcPrivHex: secrets.agentBtcPrivHex,
+      bolt11: swap.payInvoice,
+      opId: `${opId}:bridge-ln`,
+    });
+
+    const deadline = Date.now() + bridgeTimeoutMs;
+    let landed = false;
+    while (Date.now() <= deadline) {
+      const nowUsdc = await ensureSafe().readUsdcBalanceUnits(walletRecord.safeAddress).catch(() => 0n);
+      if (nowUsdc >= BigInt(neededUsdcUnits) && nowUsdc > prevUsdc) {
+        landed = true;
+        break;
+      }
+      if (swap.provider && swap.swapId) {
+        try {
+          const st = await sk.getSwapStatus({ provider: swap.provider, id: swap.swapId });
+          if (st.status === "FAILED" || st.status === "EXPIRED" || st.status === "REFUNDED") {
+            throw new Error(`cross_rail_swap_${st.status.toLowerCase()}`);
+          }
+        } catch (err) {
+          if (String(err?.message || "").startsWith("cross_rail_swap_")) throw err;
+        }
+      }
+      await new Promise((r) => setTimeout(r, bridgePollIntervalMs));
+    }
+    if (!landed) {
+      throw new Error(`cross_rail_bridge_pending:swap_${swap.swapId || "unknown"}`);
+    }
+    return {
+      from: "arkade",
+      to: "usdc",
+      provider: swap.provider,
+      swap_id: swap.swapId,
+      paid_sats: paidLn.totalSats,
+      ark_txid: paidLn.arkTxid,
+      received_usdc: String(bridgeUsdc),
+    };
+  }
+
+  async function ensureRailFunded({ walletRecord, secrets, targetRail, neededSats, neededUsdcUnits, opId }) {
+    if (targetRail === "lightning") {
+      return await bridgeUsdcToArkade({ walletRecord, secrets, neededSats, opId });
+    }
+    return await bridgeArkadeToUsdc({ walletRecord, secrets, neededUsdcUnits, opId });
+  }
+
   function ensurePayer() {
     if (!payer) {
       payer = createPrfHttp402Payer({
         safeRuntime: ensureSafe(),
         arkadeRuntime: ensureArkade(),
+        ensureRailFunded,
         ...(merchantFetch ? { merchantFetch } : {}),
       });
     }
@@ -262,12 +523,15 @@ export function createPrfWalletCoordinator({
           sessionId: existing.connectSessionId,
         });
         if (polled?.status === "pending") {
+          const createUrl =
+            createUrlByRequest.get(existing.requestId) || `${ensureConnect().origin}/`;
           return {
             ok: true,
             status: "connect_required",
             request_id: existing.requestId,
+            create_url: createUrl,
             approval_url: existing.approvalUrl,
-            next: "Open approval_url, approve with your Nuri Passkey, then repeat wallet balance with the same request_id.",
+            next: "New to Nuri: open create_url to create a Passkey (it continues straight to approval). Already have a Nuri Passkey: open approval_url. After approval, repeat wallet balance with the same request_id.",
           };
         }
         if (polled?.status !== "approved" || !polled?.result || !polled?.wallet) {
@@ -392,14 +656,21 @@ export function createPrfWalletCoordinator({
       approvalUrl: started.approval_url || started.approvalUrl,
       expiresAt: started.expires_at ?? started.expiresAt,
     });
-    const createUrl = `${ensureConnect().origin}/`;
+    const createdPasskey = await ensureConnect()
+      .startWalletCreate({ returnUrl: saved.approvalUrl })
+      .catch(() => null);
+    const createUrl =
+      createdPasskey?.approval_url ||
+      createdPasskey?.approvalUrl ||
+      `${ensureConnect().origin}/`;
+    createUrlByRequest.set(saved.requestId, createUrl);
     return {
       ok: true,
       status: "connect_required",
       request_id: saved.requestId,
-      approval_url: saved.approvalUrl,
       create_url: createUrl,
-      next: `Show approval_url to connect an existing Nuri Passkey (or if the person has no Nuri Passkey yet, open ${createUrl} to create one first, then approve approval_url). After approval, repeat wallet balance with the same request_id.`,
+      approval_url: saved.approvalUrl,
+      next: "New to Nuri: open create_url to create a Passkey (it continues straight to approval). Already have a Nuri Passkey: open approval_url. After approval, repeat wallet balance with the same request_id.",
     };
   }
 
@@ -508,10 +779,11 @@ export function createPrfWalletCoordinator({
         agentBtcPrivHex: secrets.agentBtcPrivHex,
         amountSats,
       });
+      const recvReqId = args.request_id || `ln-recv-${created.rfqId.slice(0, 16)}`;
       db.saveLightningReceive({
         rfqId: created.rfqId,
         walletId: wallet.walletId,
-        requestId: args.request_id || null,
+        requestId: recvReqId,
         paymentHash: created.paymentHash,
         invoice: created.invoice,
         payAmountSats: created.payAmountSats,
@@ -523,11 +795,11 @@ export function createPrfWalletCoordinator({
         payoutAddress: created.payoutAddress,
         quoteJson: created.quoteJson,
       });
-      return {
+      const out = {
         ok: true,
         status: "done",
         rail: "lightning",
-        ...(args.request_id ? { request_id: args.request_id } : {}),
+        request_id: recvReqId,
         invoice: created.invoice,
         payment_hash: created.paymentHash,
         amount_sats: created.payAmountSats,
@@ -535,8 +807,24 @@ export function createPrfWalletCoordinator({
         fee_sats: created.feeSats,
         expires_at: created.expiresAt,
         arkade_address: created.payoutAddress,
-        next: "Pay invoice over Lightning; call wallet balance once paid to claim into 2-of-2 Arkade custody.",
+        next: `Share invoice for ${created.payAmountSats} sats (includes ${created.feeSats} sats fee; you net ${created.expectedAmountSats} sats). Once paid, calling wallet balance automatically sweeps the sats into your balance.`,
       };
+      db.recordOperation({
+        walletId: wallet.walletId,
+        requestId: recvReqId,
+        action: "receive",
+        rail: "lightning",
+        status: "pending",
+        amountDisplay: `${created.payAmountSats} sats`,
+        summary: {
+          kind: "receive",
+          rail: "lightning",
+          to: created.paymentHash,
+          tx: null,
+        },
+        result: out,
+      });
+      return out;
     }
 
     return {
@@ -544,6 +832,275 @@ export function createPrfWalletCoordinator({
       status: "failed",
       error: "rail must be usdc, lightning, or arkade.",
     };
+  }
+
+  async function payBolt11WithCrossRail({ wallet, secrets, bolt11, maxSats, maxAmountUnits, opId, toLabel }) {
+    const cleanInvoice = String(bolt11 || "").trim().replace(/^lightning:/i, "");
+    const facts = ensureArkade().decodeBolt11(cleanInvoice);
+    if (!facts.amountSats || facts.amountSats <= 0) {
+      throw new Error("amountless_bolt11_not_supported");
+    }
+    if (maxSats !== undefined && maxSats !== null && BigInt(facts.amountSats) > BigInt(maxSats)) {
+      const err = new Error("invoice_exceeds_max_sats");
+      err.code = "over_max_amount";
+      throw err;
+    }
+
+    const arkBal = await ensureArkade().readBalance(wallet).catch(() => ({ sats: 0n }));
+    const feeBuffer = BigInt(Math.max(100, Math.ceil(facts.amountSats * 0.03)));
+    if (arkBal.sats >= BigInt(facts.amountSats) + feeBuffer) {
+      const paid = await ensureArkade().payBolt11Invoice({
+        walletRecord: wallet,
+        agentBtcPrivHex: secrets.agentBtcPrivHex,
+        bolt11: cleanInvoice,
+        maxSats,
+        opId,
+      });
+      return { mode: "native", paid };
+    }
+
+    // Arkade sats insufficient — check Base Safe USDC for automatic cross-rail payment!
+    const usdcBal = await ensureSafe().readUsdcBalanceUnits(wallet.safeAddress).catch(() => 0n);
+    if (usdcBal <= 0n) {
+      // Let native path produce the normal insufficient-sats error if both rails are empty.
+      const paid = await ensureArkade().payBolt11Invoice({
+        walletRecord: wallet,
+        agentBtcPrivHex: secrets.agentBtcPrivHex,
+        bolt11: cleanInvoice,
+        maxSats,
+        opId,
+      });
+      return { mode: "native", paid };
+    }
+
+    const sk = ensureSwapkit();
+    const route = await sk.routeSwap({
+      from: "USDC_BASE",
+      to: "BTC_LN",
+      sats: facts.amountSats,
+      side: "settle",
+      liveOnly: true,
+    });
+
+    // Path A: Direct exact USDC_BASE -> BTC_LN payment via SwapKit (when >= provider min)
+    if (route?.bestExecutable) {
+      const estUnits = usdcAmountToUnitsCeil(route.bestExecutable.depositAmount);
+      if (maxAmountUnits !== undefined && estUnits > BigInt(maxAmountUnits)) {
+        const err = new Error("invoice_exceeds_max_amount");
+        err.code = "over_max_amount";
+        throw err;
+      }
+      if (usdcBal < estUnits) {
+        throw new Error(
+          `insufficient_usdc_for_lightning_swap:need_${unitsToDecimal(String(estUnits), 6)}_have_${unitsToDecimal(String(usdcBal), 6)}`,
+        );
+      }
+      const swap = await sk.createSwap({
+        from: "USDC_BASE",
+        to: "BTC_LN",
+        sats: facts.amountSats,
+        side: "settle",
+        settleTarget: cleanInvoice,
+        refundAddress: wallet.safeAddress,
+        walletCapabilities: ["send_asset"],
+        customOrderId: opId,
+      });
+      if (!swap.sendToAddress || swap.depositAmount == null) {
+        throw new Error("cross_rail_swap_missing_deposit_address");
+      }
+      const depositUnits = usdcAmountToUnitsCeil(swap.depositAmount);
+      if (maxAmountUnits !== undefined && depositUnits > BigInt(maxAmountUnits)) {
+        const err = new Error("invoice_exceeds_max_amount");
+        err.code = "over_max_amount";
+        throw err;
+      }
+      if (usdcBal < depositUnits) {
+        throw new Error(
+          `insufficient_usdc_for_lightning_swap:need_${unitsToDecimal(String(depositUnits), 6)}_have_${unitsToDecimal(String(usdcBal), 6)}`,
+        );
+      }
+      const sent = await ensureSafe().transferUsdc({
+        walletRecord: toSafeWalletRow(wallet),
+        agentEthPrivateKeyHex: secrets.agentEthPrivHex,
+        to: getAddress(swap.sendToAddress),
+        amountUnits: depositUnits,
+        opId: `${opId}:ln-usdc`,
+      });
+      const polled = await sk.pollUntilSettled({
+        provider: swap.provider,
+        id: swap.swapId,
+        timeoutMs: bridgeTimeoutMs,
+        intervalMs: bridgePollIntervalMs,
+      });
+      if (polled.status === "failed") {
+        throw new Error(`cross_rail_swap_failed:${swap.swapId || "unknown"}`);
+      }
+      return {
+        mode: "direct_swap",
+        status: polled.status,
+        depositUsdc: unitsToDecimal(String(depositUnits), 6),
+        txHash: sent.txHash,
+        swapId: swap.swapId,
+        provider: swap.provider,
+        amountSats: facts.amountSats,
+        paymentHash: facts.paymentHash,
+        to: toLabel || facts.paymentHash,
+      };
+    }
+
+    // Path B: Invoice is below provider min (~$5) — self-bridge minimum tranche from Base Safe USDC
+    // into our own 2-of-2 Arkade custody, then pay the exact BOLT11 invoice natively!
+    const bridged = await bridgeUsdcToArkade({
+      walletRecord: wallet,
+      secrets,
+      neededSats: Number(BigInt(facts.amountSats) + feeBuffer),
+      opId,
+    });
+    const paid = await ensureArkade().payBolt11Invoice({
+      walletRecord: wallet,
+      agentBtcPrivHex: secrets.agentBtcPrivHex,
+      bolt11: cleanInvoice,
+      maxSats,
+      opId,
+    });
+    return { mode: "bridged", paid, bridged };
+  }
+
+  async function payOnchainBtc({ wallet, secrets, btcAddress, amountSats, maxSats, maxAmountUnits, opId, reqId }) {
+    if (maxSats !== undefined && maxSats !== null && BigInt(amountSats) > BigInt(maxSats)) {
+      const err = new Error("btc_payment_exceeds_max_sats");
+      err.code = "over_max_amount";
+      throw err;
+    }
+
+    const [arkRes, usdcRes] = await Promise.allSettled([
+      ensureArkade().readBalance(wallet),
+      ensureSafe().readUsdcBalanceUnits(wallet.safeAddress),
+    ]);
+    const arkSats = arkRes.status === "fulfilled" ? arkRes.value.sats : 0n;
+    const usdcBal = usdcRes.status === "fulfilled" ? usdcRes.value : 0n;
+    const sk = ensureSwapkit();
+
+    // Prefer Arkade sats when sufficient (~5% buffer for L1 miner + swap fee), else Base USDC.
+    const arkNeededEstimate = BigInt(amountSats) + BigInt(Math.max(1000, Math.ceil(amountSats * 0.05)));
+    if (arkSats >= arkNeededEstimate) {
+      const swap = await sk.createSwap({
+        from: "BTC_LN",
+        to: "BTC",
+        sats: amountSats,
+        side: "settle",
+        settleTarget: btcAddress,
+        walletCapabilities: ["pay_lightning_invoice"],
+        customOrderId: opId,
+      });
+      if (!swap.payInvoice) {
+        throw new Error("onchain_btc_swap_missing_lightning_invoice");
+      }
+      const paidLn = await ensureArkade().payBolt11Invoice({
+        walletRecord: wallet,
+        agentBtcPrivHex: secrets.agentBtcPrivHex,
+        bolt11: swap.payInvoice,
+        maxSats,
+        opId: `${opId}:btc-ln`,
+      });
+      const polled = await sk.pollUntilSettled({
+        provider: swap.provider,
+        id: swap.swapId,
+        timeoutMs: bridgeTimeoutMs,
+        intervalMs: bridgePollIntervalMs,
+      });
+      if (polled.status === "failed") {
+        throw new Error(`onchain_btc_swap_failed:${swap.swapId || "unknown"}`);
+      }
+      const out = {
+        ok: true,
+        status: polled.status,
+        request_id: reqId,
+        rail: "btc",
+        funded_from: "arkade",
+        to: btcAddress,
+        amount_sats: amountSats,
+        fee_sats: Math.max(0, paidLn.totalSats - amountSats),
+        ...(swap.swapId ? { swap_id: swap.swapId } : {}),
+        receipt: {
+          tx: polled.settleTxid || paidLn.arkTxid,
+          amount: `${amountSats} sats`,
+          to: btcAddress,
+        },
+        next:
+          polled.status === "done"
+            ? "On-chain Bitcoin sent."
+            : "Swap funded; on-chain Bitcoin broadcast is processing. Call wallet history or balance to verify.",
+      };
+      return out;
+    }
+
+    if (usdcBal > 0n) {
+      const swap = await sk.createSwap({
+        from: "USDC_BASE",
+        to: "BTC",
+        sats: amountSats,
+        side: "settle",
+        settleTarget: btcAddress,
+        refundAddress: wallet.safeAddress,
+        walletCapabilities: ["send_asset"],
+        customOrderId: opId,
+      });
+      if (!swap.sendToAddress || swap.depositAmount == null) {
+        throw new Error("onchain_btc_swap_missing_usdc_deposit");
+      }
+      const depositUnits = usdcAmountToUnitsCeil(swap.depositAmount);
+      if (maxAmountUnits !== undefined && depositUnits > BigInt(maxAmountUnits)) {
+        const err = new Error("invoice_exceeds_max_amount");
+        err.code = "over_max_amount";
+        throw err;
+      }
+      if (usdcBal < depositUnits) {
+        throw new Error(
+          `insufficient_usdc_for_btc_send:need_${unitsToDecimal(String(depositUnits), 6)}_have_${unitsToDecimal(String(usdcBal), 6)}`,
+        );
+      }
+      const sent = await ensureSafe().transferUsdc({
+        walletRecord: toSafeWalletRow(wallet),
+        agentEthPrivateKeyHex: secrets.agentEthPrivHex,
+        to: getAddress(swap.sendToAddress),
+        amountUnits: depositUnits,
+        opId: `${opId}:btc-usdc`,
+      });
+      const polled = await sk.pollUntilSettled({
+        provider: swap.provider,
+        id: swap.swapId,
+        timeoutMs: bridgeTimeoutMs,
+        intervalMs: bridgePollIntervalMs,
+      });
+      if (polled.status === "failed") {
+        throw new Error(`onchain_btc_swap_failed:${swap.swapId || "unknown"}`);
+      }
+      const depositDec = unitsToDecimal(String(depositUnits), 6);
+      return {
+        ok: true,
+        status: polled.status,
+        request_id: reqId,
+        rail: "btc",
+        funded_from: "usdc",
+        to: btcAddress,
+        amount_sats: amountSats,
+        ...(swap.swapId ? { swap_id: swap.swapId } : {}),
+        receipt: {
+          tx: polled.settleTxid || sent.txHash,
+          amount: `${amountSats} sats (${depositDec} USDC)`,
+          to: btcAddress,
+        },
+        next:
+          polled.status === "done"
+            ? "On-chain Bitcoin sent from Base USDC."
+            : "USDC swap funded; on-chain Bitcoin payout is processing.",
+      };
+    }
+
+    throw new Error(
+      `insufficient_balance_for_btc_send:need_${amountSats}_sats_have_${arkSats.toString()}_sats_and_0_usdc`,
+    );
   }
 
   async function handlePay(args) {
@@ -566,12 +1123,20 @@ export function createPrfWalletCoordinator({
       args.max_sats !== undefined ? parsePositiveSats(args.max_sats, "max_sats") : undefined;
 
     try {
+      // Universal target resolution: `url` OR `to: "https://..."` both work seamlessly!
+      const rawUrl =
+        typeof args.url === "string" && args.url.trim()
+          ? args.url.trim()
+          : typeof args.to === "string" && HTTPS_URL_RE.test(args.to.trim())
+            ? args.to.trim()
+            : null;
+
       // Case 1: HTTP 402 URL (`x402`, `EVM MPP`, `L402`, `Lightning MPP`)
-      if (typeof args.url === "string" && args.url.trim()) {
+      if (rawUrl) {
         const res = await ensurePayer().payHttpResource({
           walletRecord: wallet,
           secrets,
-          url: args.url.trim(),
+          url: rawUrl,
           method: args.method || "GET",
           body: args.body,
           prefer: args.prefer,
@@ -581,13 +1146,23 @@ export function createPrfWalletCoordinator({
           opId,
         });
 
+        const dryPrice = res.dry_run
+          ? res.price ||
+            (res.amount_units !== undefined
+              ? { amount: unitsToDecimal(String(res.amount_units), 6), currency: "USDC" }
+              : undefined)
+          : undefined;
+
         const out = {
           ok: res.status !== "failed",
           status: res.status,
           request_id: reqId,
           ...(res.protocol ? { protocol: res.protocol } : {}),
           ...(res.rail ? { rail: res.rail } : {}),
-          ...(res.dry_run ? { quote: res.quote, payable: res.payable } : {}),
+          ...(res.funded_from ? { funded_from: res.funded_from } : {}),
+          ...(res.cross_rail ? { cross_rail: true } : {}),
+          ...(res.bridged ? { bridged: res.bridged } : {}),
+          ...(res.dry_run ? { quote: res.quote, payable: res.payable, ...(dryPrice ? { price: dryPrice } : {}) } : {}),
           ...(res.resource ? { resource: res.resource } : {}),
           ...(res.preimage ? { preimage: res.preimage } : {}),
           ...(res.payment_hash ? { payment_hash: res.payment_hash } : {}),
@@ -601,8 +1176,13 @@ export function createPrfWalletCoordinator({
                     res.amount_units !== undefined
                       ? `${unitsToDecimal(String(res.amount_units), 6)} USDC`
                       : `${res.amount_sats} sats`,
-                  to: args.url.trim(),
+                  to: rawUrl,
                 },
+              }
+            : {}),
+          ...(res.dry_run
+            ? {
+                next: `Dry run only — nothing was paid. Price is ${dryPrice ? `${dryPrice.amount} ${dryPrice.currency}` : "quoted"}${res.over_cap ? " (exceeds your max_amount/max_sats cap)" : ""}. Call wallet pay without dry_run to pay.`,
               }
             : {}),
         };
@@ -623,7 +1203,7 @@ export function createPrfWalletCoordinator({
             summary: {
               kind: "pay",
               protocol: res.protocol || null,
-              to: args.url.trim(),
+              to: rawUrl,
               tx: res.tx_hash || res.ark_txid || null,
             },
             result: out,
@@ -632,30 +1212,86 @@ export function createPrfWalletCoordinator({
         return out;
       }
 
-      const target = String(args.invoice || args.to || "").trim();
+      let target = String(args.invoice || args.to || "").trim();
       if (!target) {
         return {
           ok: false,
           status: "failed",
           error:
-            "Provide url (paid HTTPS API), invoice (BOLT11 lnbc...), or to (0x Base address, ark1... Arkade address, or user@domain Lightning Address).",
+            "Provide to (https:// paid API, lnbc... BOLT11, user@domain, bc1.../bitcoin:... on-chain Bitcoin, ark1... Arkade, or 0x... Base USDC).",
         };
       }
 
-      // Case 2: Direct BOLT11 invoice
+      // Redirect Monero (XMR) addresses cleanly to the companion SwapKit MCP server
+      if (isMoneroAddress(target)) {
+        return {
+          ok: false,
+          status: "failed",
+          error:
+            "Monero (XMR) payouts use the companion SwapKit MCP server (https://swapkit.nuri.com/mcp): call swap_create from USDC_BASE or BTC_LN to XMR_MONERO, then pay its deposit with wallet pay.",
+        };
+      }
+
+      // Unwrap BIP21 `bitcoin:bc1...?amount=...&lightning=...` URIs automatically
+      let bip21Sats = undefined;
+      const bip21 = parseBip21Uri(target);
+      if (bip21) {
+        if (bip21.lightning) {
+          target = bip21.lightning;
+        } else if (bip21.address) {
+          target = bip21.address;
+          if (bip21.amountSats) bip21Sats = bip21.amountSats;
+        }
+      }
+
+      // Case 2: Direct BOLT11 invoice (native Arkade OR automatic cross-rail from Base USDC!)
       if (BOLT11_RE.test(target)) {
-        const paid = await ensureArkade().payBolt11Invoice({
-          walletRecord: wallet,
-          agentBtcPrivHex: secrets.agentBtcPrivHex,
+        const res = await payBolt11WithCrossRail({
+          wallet,
+          secrets,
           bolt11: target,
           maxSats,
+          maxAmountUnits,
           opId,
         });
+        if (res.mode === "direct_swap") {
+          const out = {
+            ok: true,
+            status: res.status,
+            request_id: reqId,
+            rail: "lightning",
+            funded_from: "usdc",
+            amount_sats: res.amountSats,
+            payment_hash: res.paymentHash,
+            ...(res.swapId ? { swap_id: res.swapId } : {}),
+            receipt: {
+              tx: res.txHash,
+              amount: `${res.amountSats} sats (${res.depositUsdc} USDC)`,
+              to: res.paymentHash,
+            },
+            next: `Paid ${res.amountSats} sats over Lightning (auto-converted from ${res.depositUsdc} Base USDC).`,
+          };
+          if (res.status === "done") {
+            db.recordOperation({
+              walletId: wallet.walletId,
+              requestId: reqId,
+              action: "pay",
+              rail: "lightning",
+              status: "done",
+              amountDisplay: `${res.amountSats} sats`,
+              summary: { kind: "pay", to: res.paymentHash, tx: res.txHash },
+              result: out,
+            });
+          }
+          return out;
+        }
+        const paid = res.paid;
         const out = {
           ok: true,
           status: paid.status,
           request_id: reqId,
           rail: "lightning",
+          ...(res.bridged ? { funded_from: "usdc", bridged: res.bridged } : {}),
           amount_sats: paid.amountSats,
           fee_sats: paid.feeSats,
           payment_hash: paid.paymentHash,
@@ -681,7 +1317,7 @@ export function createPrfWalletCoordinator({
         return out;
       }
 
-      // Case 3: Lightning Address (`alice@domain.com`)
+      // Case 3: Lightning Address (`alice@domain.com`) — native Arkade OR cross-rail from Base USDC!
       if (LN_ADDRESS_RE.test(target)) {
         const sats = parsePositiveSats(args.amount_sats, "amount_sats");
         if (!sats) {
@@ -695,18 +1331,53 @@ export function createPrfWalletCoordinator({
           lightningAddress: target,
           amountSats: sats,
         });
-        const paid = await ensureArkade().payBolt11Invoice({
-          walletRecord: wallet,
-          agentBtcPrivHex: secrets.agentBtcPrivHex,
+        const res = await payBolt11WithCrossRail({
+          wallet,
+          secrets,
           bolt11,
           maxSats: maxSats ?? sats + Math.max(50, Math.ceil(sats * 0.03)),
+          maxAmountUnits,
           opId,
+          toLabel: target,
         });
+        if (res.mode === "direct_swap") {
+          const out = {
+            ok: true,
+            status: res.status,
+            request_id: reqId,
+            rail: "lightning",
+            funded_from: "usdc",
+            to: target,
+            amount_sats: res.amountSats,
+            payment_hash: res.paymentHash,
+            ...(res.swapId ? { swap_id: res.swapId } : {}),
+            receipt: {
+              tx: res.txHash,
+              amount: `${res.amountSats} sats (${res.depositUsdc} USDC)`,
+              to: target,
+            },
+          };
+          if (res.status === "done") {
+            db.recordOperation({
+              walletId: wallet.walletId,
+              requestId: reqId,
+              action: "pay",
+              rail: "lightning",
+              status: "done",
+              amountDisplay: `${res.amountSats} sats`,
+              summary: { kind: "pay", to: target, tx: res.txHash },
+              result: out,
+            });
+          }
+          return out;
+        }
+        const paid = res.paid;
         const out = {
           ok: true,
           status: paid.status,
           request_id: reqId,
           rail: "lightning",
+          ...(res.bridged ? { funded_from: "usdc", bridged: res.bridged } : {}),
           to: target,
           amount_sats: paid.amountSats,
           fee_sats: paid.feeSats,
@@ -733,7 +1404,45 @@ export function createPrfWalletCoordinator({
         return out;
       }
 
-      // Case 4: Arkade native off-chain send (`ark1...` / `tark1...`)
+      // Case 4: On-chain Bitcoin (`bc1...` / `1...` / `3...` / `bitcoin:...`)
+      if (isOnchainBtcAddress(target)) {
+        const sats =
+          parsePositiveSats(args.amount_sats, "amount_sats") ??
+          bip21Sats ??
+          (args.amount !== undefined && args.amount !== "" ? btcDecimalToSats(args.amount) : undefined);
+        if (!sats) {
+          return {
+            ok: false,
+            status: "failed",
+            error: "Sending on-chain Bitcoin needs amount_sats (e.g. 25000) or BTC amount (e.g. \"0.00025\").",
+          };
+        }
+        const out = await payOnchainBtc({
+          wallet,
+          secrets,
+          btcAddress: target,
+          amountSats: sats,
+          maxSats,
+          maxAmountUnits,
+          opId,
+          reqId,
+        });
+        if (out.status === "done") {
+          db.recordOperation({
+            walletId: wallet.walletId,
+            requestId: reqId,
+            action: "pay",
+            rail: "btc",
+            status: "done",
+            amountDisplay: `${sats} sats`,
+            summary: { kind: "send", to: target, tx: out.receipt?.tx || null },
+            result: out,
+          });
+        }
+        return out;
+      }
+
+      // Case 5: Arkade native off-chain send (`ark1...` / `tark1...`)
       if (isValidArkAddress(target)) {
         const sats = parsePositiveSats(args.amount_sats, "amount_sats");
         if (!sats) {
@@ -776,7 +1485,7 @@ export function createPrfWalletCoordinator({
         return out;
       }
 
-      // Case 5: Base USDC transfer to `0x...`
+      // Case 6: Base USDC transfer to `0x...` (native Safe OR automatic cross-rail from Arkade sats!)
       if (ETH_ADDRESS_RE.test(target)) {
         const units = parseUsdcUnits(args.amount, "amount");
         if (!units || units <= 0n) {
@@ -787,60 +1496,185 @@ export function createPrfWalletCoordinator({
           };
         }
         const toAddr = getAddress(target);
-        const safeWalletRow = {
-          cred_id_b64u: wallet.credIdB64u,
-          slot_index: wallet.slotIndex,
-          main_eoa: wallet.mainEoa,
-          passkey_signer_address: wallet.passkeySignerAddress,
-          agent_eoa: wallet.agentEthEoa,
-          cosigner_eoa: wallet.cosignerEoa,
-          safe_address: wallet.safeAddress,
-        };
-        const sent = await ensureSafe().transferUsdc({
-          walletRecord: safeWalletRow,
-          agentEthPrivateKeyHex: secrets.agentEthPrivHex,
-          to: toAddr,
-          amountUnits: units,
-          opId,
-        });
         const dec = unitsToDecimal(String(units), 6);
-        const out = {
-          ok: true,
-          status: "done",
-          request_id: reqId,
-          rail: "usdc",
-          to: toAddr,
-          receipt: {
-            tx: sent.txHash,
-            amount: dec,
+        const usdcBal = await ensureSafe().readUsdcBalanceUnits(wallet.safeAddress).catch(() => 0n);
+
+        if (usdcBal >= BigInt(units)) {
+          const sent = await ensureSafe().transferUsdc({
+            walletRecord: toSafeWalletRow(wallet),
+            agentEthPrivateKeyHex: secrets.agentEthPrivHex,
             to: toAddr,
-          },
+            amountUnits: units,
+            opId,
+          });
+          const out = {
+            ok: true,
+            status: "done",
+            request_id: reqId,
+            rail: "usdc",
+            to: toAddr,
+            receipt: {
+              tx: sent.txHash,
+              amount: dec,
+              to: toAddr,
+            },
+          };
+          db.recordOperation({
+            walletId: wallet.walletId,
+            requestId: reqId,
+            action: "pay",
+            rail: "usdc",
+            status: "done",
+            amountDisplay: dec,
+            summary: { kind: "send", to: toAddr, tx: sent.txHash },
+            result: out,
+          });
+          return out;
+        }
+
+        // Safe USDC insufficient — check Arkade sats for automatic cross-rail USDC payout!
+        const arkBal = await ensureArkade().readBalance(wallet).catch(() => ({ sats: 0n }));
+        if (arkBal.sats > 0n) {
+          const sk = ensureSwapkit();
+          const route = await sk.routeSwap({
+            from: "BTC_LN",
+            to: "USDC_BASE",
+            amount: Number(dec),
+            side: "settle",
+            liveOnly: true,
+          });
+
+          // Path A: Direct exact BTC_LN -> USDC_BASE swap to recipient `toAddr`
+          if (route?.bestExecutable) {
+            const swap = await sk.createSwap({
+              from: "BTC_LN",
+              to: "USDC_BASE",
+              amount: Number(dec),
+              side: "settle",
+              settleTarget: toAddr,
+              walletCapabilities: ["pay_lightning_invoice"],
+              customOrderId: opId,
+            });
+            if (!swap.payInvoice) {
+              throw new Error("cross_rail_swap_missing_lightning_invoice");
+            }
+            const paidLn = await ensureArkade().payBolt11Invoice({
+              walletRecord: wallet,
+              agentBtcPrivHex: secrets.agentBtcPrivHex,
+              bolt11: swap.payInvoice,
+              maxSats,
+              opId: `${opId}:usdc-ln`,
+            });
+            const polled = await sk.pollUntilSettled({
+              provider: swap.provider,
+              id: swap.swapId,
+              timeoutMs: bridgeTimeoutMs,
+              intervalMs: bridgePollIntervalMs,
+            });
+            if (polled.status === "failed") {
+              throw new Error(`cross_rail_swap_failed:${swap.swapId || "unknown"}`);
+            }
+            const out = {
+              ok: true,
+              status: polled.status,
+              request_id: reqId,
+              rail: "usdc",
+              funded_from: "arkade",
+              to: toAddr,
+              amount_sats: paidLn.totalSats,
+              ...(swap.swapId ? { swap_id: swap.swapId } : {}),
+              receipt: {
+                tx: polled.settleTxid || paidLn.arkTxid,
+                amount: dec,
+                to: toAddr,
+              },
+            };
+            if (polled.status === "done") {
+              db.recordOperation({
+                walletId: wallet.walletId,
+                requestId: reqId,
+                action: "pay",
+                rail: "usdc",
+                status: "done",
+                amountDisplay: dec,
+                summary: { kind: "send", to: toAddr, tx: out.receipt.tx },
+                result: out,
+              });
+            }
+            return out;
+          }
+
+          // Path B: Small USDC transfer (< provider min ~$5) — bridge min tranche to own Safe, then send exact amount!
+          const bridged = await bridgeArkadeToUsdc({
+            walletRecord: wallet,
+            secrets,
+            neededUsdcUnits: BigInt(units),
+            opId,
+          });
+          const sent = await ensureSafe().transferUsdc({
+            walletRecord: toSafeWalletRow(wallet),
+            agentEthPrivateKeyHex: secrets.agentEthPrivHex,
+            to: toAddr,
+            amountUnits: units,
+            opId,
+          });
+          const out = {
+            ok: true,
+            status: "done",
+            request_id: reqId,
+            rail: "usdc",
+            funded_from: "arkade",
+            bridged,
+            to: toAddr,
+            receipt: {
+              tx: sent.txHash,
+              amount: dec,
+              to: toAddr,
+            },
+          };
+          db.recordOperation({
+            walletId: wallet.walletId,
+            requestId: reqId,
+            action: "pay",
+            rail: "usdc",
+            status: "done",
+            amountDisplay: dec,
+            summary: { kind: "send", to: toAddr, tx: sent.txHash },
+            result: out,
+          });
+          return out;
+        }
+
+        // Neither rail has enough funds
+        return {
+          ok: false,
+          status: "failed",
+          error: `Insufficient balance: need ${dec} USDC (have ${unitsToDecimal(String(usdcBal), 6)} USDC and ${arkBal.sats.toString()} sats). Fund the wallet first via wallet receive.`,
         };
-        db.recordOperation({
-          walletId: wallet.walletId,
-          requestId: reqId,
-          action: "pay",
-          rail: "usdc",
-          status: "done",
-          amountDisplay: dec,
-          summary: { kind: "send", to: toAddr, tx: sent.txHash },
-          result: out,
-        });
-        return out;
       }
 
       return {
         ok: false,
         status: "failed",
-        error: "Unrecognized destination. Use an https:// URL, BOLT11 lnbc... invoice, user@domain, ark1... address, or 0x... Base address.",
+        error:
+          "Unrecognized destination. Use an https:// URL, BOLT11 lnbc... invoice, user@domain, bc1.../bitcoin:... on-chain Bitcoin, ark1... address, or 0x... Base address. For other assets like XMR, use https://swapkit.nuri.com/mcp.",
       };
     } catch (err) {
       if (err?.code === "over_max_amount") {
+        const price =
+          err.invoiceUnits !== undefined
+            ? { amount: unitsToDecimal(String(err.invoiceUnits), 6), currency: "USDC" }
+            : err.invoiceSats !== undefined
+              ? { amount: String(err.invoiceSats), currency: "sats" }
+              : undefined;
+        const priceLabel = price ? ` (${price.amount} ${price.currency})` : "";
         return {
           ok: false,
           status: "failed",
+          ...(price ? { price } : {}),
           error:
-            "The invoice exceeds max_amount. Nothing was paid; send again with a NEW request_id and a higher max_amount.",
+            `The invoice${priceLabel} exceeds max_amount. Nothing was paid; STOP and ask the person first, then if they approve, send again with a NEW request_id and a higher max_amount.`,
+          next: "Tell the person the exact price and ask before raising max_amount.",
         };
       }
       const msg = String(err?.message || err);
