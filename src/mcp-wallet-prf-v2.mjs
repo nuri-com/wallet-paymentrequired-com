@@ -132,7 +132,6 @@ export function createPrfWalletCoordinator({
   let swapkit = swapkitClient || null;
   let payer = http402Payer || null;
   let closed = false;
-  const createUrlByRequest = new Map();
   const activeReceiveWatchers = new Map();
 
   function ensureStore() {
@@ -707,7 +706,15 @@ export function createPrfWalletCoordinator({
         if (existing.status === "approved" && existing.walletId) {
           const wallet = db.getWalletById(existing.walletId);
           const issuedKey = db.popIssuedGrantWalletKey(requestId);
-          const balances = await readDualBalances(wallet);
+          let secrets = null;
+          if (issuedKey) {
+            try {
+              secrets = db.unlockWalletSecrets(issuedKey).secrets;
+            } catch {
+              secrets = null;
+            }
+          }
+          const balances = await readDualBalances(wallet, secrets);
           return {
             ok: true,
             status: "done",
@@ -730,15 +737,12 @@ export function createPrfWalletCoordinator({
           sessionId: existing.connectSessionId,
         });
         if (polled?.status === "pending") {
-          const createUrl =
-            createUrlByRequest.get(existing.requestId) || `${ensureConnect().origin}/`;
           return {
             ok: true,
             status: "connect_required",
             request_id: existing.requestId,
-            create_url: createUrl,
             approval_url: existing.approvalUrl,
-            next: "New to Nuri: open create_url to create a Passkey (it continues straight to approval). Already have a Nuri Passkey: open approval_url. After approval, repeat wallet balance with the same request_id.",
+            next: 'Open approval_url and sign in with your existing Nuri Passkey to reconnect your exact wallet (new users click "Create Passkey" on that same page). After approval, repeat wallet balance with the same request_id.',
           };
         }
         if (polled?.status !== "approved" || !polled?.result || !polled?.wallet) {
@@ -834,7 +838,9 @@ export function createPrfWalletCoordinator({
         });
 
         const issuedKey = db.popIssuedGrantWalletKey(requestId) || finalized.walletKey;
-        const balances = await readDualBalances(finalized.wallet);
+        const balances = await readDualBalances(finalized.wallet, {
+          agentBtcPrivHex: decrypted.agent_btc_private_key_hex,
+        });
         return {
           ok: true,
           status: "done",
@@ -863,21 +869,12 @@ export function createPrfWalletCoordinator({
       approvalUrl: started.approval_url || started.approvalUrl,
       expiresAt: started.expires_at ?? started.expiresAt,
     });
-    const createdPasskey = await ensureConnect()
-      .startWalletCreate({ returnUrl: saved.approvalUrl })
-      .catch(() => null);
-    const createUrl =
-      createdPasskey?.approval_url ||
-      createdPasskey?.approvalUrl ||
-      `${ensureConnect().origin}/`;
-    createUrlByRequest.set(saved.requestId, createUrl);
     return {
       ok: true,
       status: "connect_required",
       request_id: saved.requestId,
-      create_url: createUrl,
       approval_url: saved.approvalUrl,
-      next: "New to Nuri: open create_url to create a Passkey (it continues straight to approval). Already have a Nuri Passkey: open approval_url. After approval, repeat wallet balance with the same request_id.",
+      next: 'Open approval_url and sign in with your existing Nuri Passkey to reconnect your exact wallet (new users click "Create Passkey" on that same page). After approval, repeat wallet balance with the same request_id.',
     };
   }
 

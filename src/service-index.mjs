@@ -38,8 +38,8 @@ export function walletLlmsTxt(origin) {
 Non-custodial Bitcoin Lightning + Base USDC wallet for AI agents in 60s. Passkey-secured (Face ID / Touch ID / smartcard), no seed phrase. Pays x402/L402 URLs, \`lnbc...\`, \`user@domain\`, \`bc1...\`/\`bitcoin:...\`, \`ark1...\`, and Base USDC \`0x...\`; auto-converts USDC <-> BTC/Lightning.
 
 ## Setup (0 -> 1 -> first payment — pick the path that fits your tools)
-- **Path 1 — MCP (\`${base}/mcp\`):** Call \`wallet { "action": "balance" }\`. Show BOTH \`create_url\` (new Passkey) and \`approval_url\` (existing Passkey). After the person says "done", repeat with the same \`request_id\` to get \`wallet_key\` (\`npw1_...\`), save it, and pass it on every call. NEVER send the person to \`${base}/\` when you already have MCP.
-- **Path 2 — HTTP / curl / bash (zero MCP setup):** Plain JSON REST at \`POST ${base}/v1/wallet\` (or \`/v1/balance\`, \`/v1/receive\`, \`/v1/pay\`, \`/v1/history\`; OpenAPI: \`${base}/openapi.json\`). Start: \`curl -sX POST ${base}/v1/wallet -H 'content-type: application/json' -d '{"action":"balance"}'\`. Show BOTH \`create_url\` and \`approval_url\`, then repeat with \`request_id\` to get \`wallet_key\` (pass in body or \`Authorization: Bearer npw1_...\`).
+- **Path 1 — MCP (\`${base}/mcp\`):** Call \`wallet { "action": "balance" }\`. Show \`approval_url\` (sign in with your existing Nuri Passkey to reconnect your exact wallet, or click "Create Passkey" on that same page). After the person says "done", repeat with the same \`request_id\` to get \`wallet_key\` (\`npw1_...\`), save it, and pass it on every call. NEVER send the person to \`${base}/\` when you already have MCP.
+- **Path 2 — HTTP / curl / bash (zero MCP setup):** Plain JSON REST at \`POST ${base}/v1/wallet\` (or \`/v1/balance\`, \`/v1/receive\`, \`/v1/pay\`, \`/v1/history\`; OpenAPI: \`${base}/openapi.json\`). Start: \`curl -sX POST ${base}/v1/wallet -H 'content-type: application/json' -d '{"action":"balance"}'\`. Open \`approval_url\`, then repeat with \`request_id\` to get \`wallet_key\` (pass in body or \`Authorization: Bearer npw1_...\`).
 - **Path 3 — Web chat with no tools (e.g. standard web ChatGPT / claude.ai):** Give 3 plain-English steps (no jargon): (1) Open **${base}/** and click **"Create / Connect Agent Wallet"** (Passkey setup, Lightning/USDC funding, and 1-click $0.01 test payment right on the page). (2) Add **\`${base}/mcp\`** as a connector in AI settings (Auth: None), OR copy the prompt on ${base}/ into an MCP/curl client. (3) Ask me to pay any x402 API, Lightning invoice, or checkout.
 
 ## 4 Actions (\`balance\`, \`receive\`, \`pay\`, \`history\`)
@@ -650,7 +650,7 @@ footer a:hover{color:var(--fg)}
   <h2>One tool, four actions</h2>
   <p class="sub">Tiny footprint (&lt;2.3% of a 64k context window) so even small 9B local models never get lost.</p>
   <div class="tools">
-    <div class="tool"><code>balance</code><p>Omit <code>wallet_key</code> to start Passkey onboarding (returns both <code>create_url</code> &amp; <code>approval_url</code>). Pass <code>wallet_key</code> to inspect Base USDC + Bitcoin Lightning/Arkade balances.</p></div>
+    <div class="tool"><code>balance</code><p>Omit <code>wallet_key</code> to start Passkey onboarding (returns <code>approval_url</code>). Pass <code>wallet_key</code> to inspect Base USDC + Bitcoin Lightning/Arkade balances.</p></div>
     <div class="tool"><code>receive</code><p>Get Base USDC or Arkade deposit addresses, or mint a fresh Lightning BOLT11 funding invoice (<code>rail: "lightning", amount_sats</code>).</p></div>
     <div class="tool"><code>pay</code><p>Universal pay: pass <code>to</code> as any <code>https://</code> 402 URL, <code>lnbc…</code>, <code>user@domain</code>, <code>bc1…</code>/<code>bitcoin:…</code>, <code>ark1…</code>, or <code>0x…</code>. Enforces <code>max_amount</code>/<code>max_sats</code> caps.</p></div>
     <div class="tool"><code>history</code><p>Recent receipts across Base USDC, Lightning, Arkade, and cross-rail bridges with settlement proofs.</p></div>
@@ -672,7 +672,7 @@ footer a:hover{color:var(--fg)}
   <div class="two" style="margin-top:20px">
     <div>
       <h4>curl (plain HTTP REST — zero MCP needed)</h4>
-      <pre><span class="c"># start Passkey setup (returns create_url + approval_url)</span>
+      <pre><span class="c"># start Passkey setup (returns approval_url)</span>
 curl -sX POST <span class="s">${restUrl}</span> \\
   -H <span class="s">'content-type: application/json'</span> \\
   -d <span class="s">'{"action":<span class="k">"balance"</span>}'</span>
@@ -694,7 +694,7 @@ curl -sX POST <span class="s">${base}/v1/pay</span> \\
     </div>
   </div>
   <ul class="agent-list">
-    <li><strong>MCP clients:</strong> connect <code>${mcpUrl}</code> and call <code>wallet { "action": "balance" }</code>. Show both <code>create_url</code> and <code>approval_url</code>, then repeat with the same <code>request_id</code>.</li>
+    <li><strong>MCP clients:</strong> connect <code>${mcpUrl}</code> and call <code>wallet { "action": "balance" }</code>. Show <code>approval_url</code> (sign in with an existing Passkey or click "Create Passkey" on that same page), then repeat with the same <code>request_id</code>.</li>
     <li><strong>HTTP / curl / bash agents:</strong> use <code>POST ${restUrl}</code> (or <code>/v1/balance</code>, <code>/v1/receive</code>, <code>/v1/pay</code>, <code>/v1/history</code>) — full OpenAPI 3.1.0 at <a href="${openapiUrl}">${openapiUrl}</a>.</li>
     <li><strong>Web-only chat (no tools):</strong> guide the user to open <code>${base}/</code>, click <strong>Create / Connect Agent Wallet</strong>, fund with Lightning or Base USDC, then connect <code>${mcpUrl}</code> (Auth: None).</li>
   </ul>
@@ -879,18 +879,10 @@ curl -sX POST <span class="s">${base}/v1/pay</span> \\
 
     if (pending && pending.request_id) {
       el.pending.classList.remove("hidden");
-      const isCreate = pending.mode === "create";
-      const primaryUrl = safeHttpsUrl(isCreate ? (pending.create_url || pending.approval_url) : (pending.approval_url || pending.create_url));
-      const altUrl = safeHttpsUrl(isCreate ? pending.approval_url : pending.create_url);
+      const primaryUrl = safeHttpsUrl(pending.approval_url);
       el.pendingOpen.href = primaryUrl || "#";
-      el.pendingOpen.textContent = isCreate ? "Open Nuri Passkey (Create) →" : "Open Nuri Passkey (Connect) →";
-      if (altUrl && altUrl !== primaryUrl) {
-        el.pendingAltWrap.classList.remove("hidden");
-        el.pendingAlt.href = altUrl;
-        el.pendingAlt.textContent = isCreate ? "Connect existing Nuri Passkey instead" : "Create a new Nuri Passkey instead";
-      } else {
-        el.pendingAltWrap.classList.add("hidden");
-      }
+      el.pendingOpen.textContent = "Open Nuri Passkey →";
+      el.pendingAltWrap.classList.add("hidden");
       return;
     }
 
@@ -924,7 +916,6 @@ curl -sX POST <span class="s">${base}/v1/pay</span> \\
         return;
       }
       if (res.status === "connect_required") {
-        pending.create_url = res.create_url || pending.create_url;
         pending.approval_url = res.approval_url || pending.approval_url;
         writeStore(PENDING_KEY, pending);
         render();
@@ -968,18 +959,17 @@ curl -sX POST <span class="s">${base}/v1/pay</span> \\
         applyConnected(res);
         return;
       }
-      if (!res.request_id || (!res.create_url && !res.approval_url)) {
+      if (!res.request_id || !res.approval_url) {
         if (pop && !pop.closed) try { pop.close(); } catch {}
         throw new Error(res.error || "Could not start Nuri Passkey onboarding.");
       }
       pending = {
         mode,
         request_id: res.request_id,
-        create_url: res.create_url || "",
         approval_url: res.approval_url || "",
       };
       writeStore(PENDING_KEY, pending);
-      const targetUrl = safeHttpsUrl(mode === "create" ? (pending.create_url || pending.approval_url) : (pending.approval_url || pending.create_url));
+      const targetUrl = safeHttpsUrl(pending.approval_url);
       if (pop && !pop.closed && targetUrl) {
         try { pop.opener = null; pop.location.replace(targetUrl); } catch {}
       } else if (pop && !pop.closed) {

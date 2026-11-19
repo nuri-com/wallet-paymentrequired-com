@@ -42,7 +42,7 @@ export function instructions(toolNames = ALWAYS_TOOLS) {
 ${WHICH.wallet}
 
 RULES
-1. No wallet_key: call wallet {action: "balance"}. Show create_url (new) and approval_url (existing). After approval, repeat balance with same request_id to get wallet_key (npw1_...).
+1. No wallet_key: call wallet {action: "balance"}. Show approval_url: sign in with your existing Nuri Passkey to reconnect your exact wallet (new users click "Create Passkey" on that same page). After approval, repeat balance with same request_id to get wallet_key (npw1_...).
 2. Hold wallet_key: send on every call. On balance/connect, ALWAYS show BOTH rails: Bitcoin (sats + arkade_address + Lightning receive) AND Base USDC (available + 0x address).
 3. wallet pay accepts any \`to\`: https:// 402 API, lnbc..., user@domain, bc1.../bitcoin:..., ark1..., or 0x.... Include a short request_id.
 4. Over-cap error: STOP, state exact price; never raise max_amount/max_sats without asking. After approval, retry with NEW request_id. Other errors: report verbatim. Follow next.

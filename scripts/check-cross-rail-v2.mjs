@@ -1,5 +1,5 @@
 // Offline E2E test for cross-rail auto-bridging (USDC <-> Lightning/Arkade),
-// on-chain Bitcoin (`bc1...` + BIP21 `bitcoin:...`), chained Passkey `create_url`,
+// on-chain Bitcoin (`bc1...` + BIP21 `bitcoin:...`), single-URL Passkey `approval_url`,
 // smart dual-rail 402 selection, universal `to`, and Monero -> SwapKit redirect.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -148,7 +148,8 @@ function encryptGrant({ prfBytes, sessionId, replyPubkey, index = 0, policy }) {
   assert.ok(!walletInst.includes("Hold a session"));
   assert.ok(walletInst.includes("swapkit.nuri.com/mcp"));
   assert.ok(walletInst.includes("NEVER pass companion MCP URLs like swapkit.nuri.com/mcp or XMR addresses into wallet pay"));
-  assert.ok(walletInst.includes("create_url"));
+  assert.ok(walletInst.includes("approval_url"));
+  assert.ok(!walletInst.includes("create_url"));
   assert.ok(walletInst.includes("NEW request_id and a higher max_amount"));
   assert.deepEqual(WALLET_TOOL.inputSchema.properties.action.enum, ["balance", "receive", "pay", "history"]);
   const { outputSchema: _omitOut, ...wireWalletTool } = WALLET_TOOL;
@@ -182,7 +183,7 @@ function encryptGrant({ prfBytes, sessionId, replyPubkey, index = 0, policy }) {
   assert.ok(walletSkillMd("https://nuriwallet.com").includes("mcp_endpoint: https://nuriwallet.com/mcp"));
 }
 
-// 2. Full cross-rail + on-chain + chained create_url + smart dual-rail 402 E2E
+// 2. Full cross-rail + on-chain + single approval_url + smart dual-rail 402 E2E
 const tmpDir = mkdtempSync(join(tmpdir(), "nuri-cross-rail-"));
 const savedEnv = { ...process.env };
 process.env.AGENT_KERNEL_ENCRYPTION_KEY = "22".repeat(32);
@@ -195,6 +196,7 @@ try {
   const swapOrders = new Map();
   let swapSeq = 0;
 
+  let startWalletCreateCalls = 0;
   const connectClient = {
     origin: "https://connect.nuri.com",
     async startAgentGrant({ replyPubkey, index, policy }) {
@@ -204,6 +206,7 @@ try {
       return { session_id: id, approval_url: approvalUrl, expires_at: new Date(Date.now() + 600_000).toISOString() };
     },
     async startWalletCreate({ returnUrl }) {
+      startWalletCreateCalls += 1;
       return {
         session_id: "create_sess_1",
         approval_url: `https://connect.nuri.com/create/create_sess_1?return_url=${encodeURIComponent(returnUrl)}`,
@@ -525,11 +528,13 @@ try {
   assert.equal(noKeyPay.ok, false);
   assert.equal(noKeyPay.status, "connect_required");
 
-  // B. Step-1 Onboarding returns chained `create_url` with `return_url=<approval_url>` AND `approval_url`!
+  // B. Step-1 Onboarding returns ONLY `approval_url` (NO `create_url`, never calls `startWalletCreate`)!
   const start = await walletTool.call({ action: "balance", request_id: "ob-1" });
   assert.equal(start.status, "connect_required");
-  assert.ok(start.create_url.includes("/create/create_sess_1?return_url="));
-  assert.ok(start.create_url.includes(encodeURIComponent(start.approval_url)));
+  assert.ok(start.approval_url.startsWith("https://connect.nuri.com/sign/"));
+  assert.equal(start.create_url, undefined);
+  assert.equal("create_url" in start, false);
+  assert.equal(startWalletCreateCalls, 0);
 
   const sid = start.approval_url.split("/").pop();
   const s = sessions.get(sid);
@@ -966,7 +971,7 @@ try {
     const restAnonJson = JSON.parse(restAnon.body);
     assert.equal(restAnonJson.status, "connect_required");
     assert.ok(restAnonJson.approval_url);
-    assert.ok(restAnonJson.create_url);
+    assert.equal(restAnonJson.create_url, undefined);
 
     // /v1/balance injects action="balance" automatically and accepts Authorization: Bearer npw1_...
     const restBalBadKey = await httpReq("/v1/balance", {
@@ -993,7 +998,7 @@ try {
     }
   }
 
-  console.log("cross-rail v2 check ok: background pushClaim auto-claim, pending send fate refresh, chained create_url, universal to, dual-rail auto-pick + capHint, cross-rail max_amount/max_sats guards, pending idempotency replay, USDC->BOLT11, USDC->L402 bridge, Arkade->x402 bridge, bc1/BIP21 from BTC & USDC, Monero->SwapKit redirect, and host-aware /, /llms.txt, /skill.md, /mcp 405 verified");
+  console.log("cross-rail v2 check ok: background pushClaim auto-claim, pending send fate refresh, single approval_url, universal to, dual-rail auto-pick + capHint, cross-rail max_amount/max_sats guards, pending idempotency replay, USDC->BOLT11, USDC->L402 bridge, Arkade->x402 bridge, bc1/BIP21 from BTC & USDC, Monero->SwapKit redirect, and host-aware /, /llms.txt, /skill.md, /mcp 405 verified");
 } finally {
   Object.keys(process.env).forEach((k) => {
     if (!(k in savedEnv)) delete process.env[k];
