@@ -2,10 +2,14 @@
 // on-chain Bitcoin (`bc1...` + BIP21 `bitcoin:...`), chained Passkey `create_url`,
 // smart dual-rail 402 selection, universal `to`, and Monero -> SwapKit redirect.
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import http from "node:http";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { bech32, hex } from "@scure/base";
 import { getAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -23,6 +27,12 @@ import { xchacha20poly1305 } from "@noble/ciphers/chacha";
 import { decodeBolt11 } from "@arkade-os/swap/advanced";
 import { createMcpWalletTool, WALLET_TOOL } from "../src/mcp-wallet-tool.mjs";
 import { instructions } from "../src/mcp-instructions.mjs";
+import {
+  resolveWalletOrigin,
+  serviceIndexHtml,
+  walletLlmsTxt,
+  walletSkillMd,
+} from "../src/service-index.mjs";
 import {
   btcDecimalToSats,
   isMoneroAddress,
@@ -136,9 +146,29 @@ function encryptGrant({ prfBytes, sessionId, replyPubkey, index = 0, policy }) {
   assert.ok(walletInst.includes("wallet_key"));
   assert.ok(!walletInst.includes("Hold a session"));
   assert.ok(walletInst.includes("swapkit.nuri.com/mcp"));
+  assert.ok(walletInst.includes("NEVER pass companion MCP URLs like swapkit.nuri.com/mcp or XMR addresses into wallet pay"));
   assert.ok(walletInst.includes("create_url"));
   assert.ok(walletInst.includes("NEW request_id and a higher max_amount"));
   assert.deepEqual(WALLET_TOOL.inputSchema.properties.action.enum, ["balance", "receive", "pay", "history"]);
+  const { outputSchema: _omitOut, ...wireWalletTool } = WALLET_TOOL;
+  const approxStaticTokens = Math.ceil((walletInst.length + JSON.stringify(wireWalletTool).length) / 4);
+  assert.ok(
+    approxStaticTokens / 64000 <= 0.0235,
+    `static MCP footprint ${((approxStaticTokens / 64000) * 100).toFixed(3)}% exceeds 2.35% of 64k`,
+  );
+
+  // Host-aware origin resolution & inline script syntax
+  assert.equal(resolveWalletOrigin("wallet.paymentrequired.com"), "https://wallet.paymentrequired.com");
+  assert.equal(resolveWalletOrigin("wallet.nuri.com:443"), "https://wallet.nuri.com");
+  assert.equal(resolveWalletOrigin("nuriwallet.com"), "https://nuriwallet.com");
+  assert.equal(resolveWalletOrigin({ headers: { "x-forwarded-host": "nuriwallet.com, 10.0.0.1", host: "127.0.0.1:8798" } }), "https://nuriwallet.com");
+  assert.equal(resolveWalletOrigin("evil.example.com"), "https://wallet.paymentrequired.com");
+  const homeHtml = serviceIndexHtml("wallet", { origin: "https://wallet.nuri.com" });
+  const scriptMatch = homeHtml.match(/<script>([\s\S]*?)<\/script>/);
+  assert.ok(scriptMatch, "homepage must include inline setup widget script");
+  new Function(scriptMatch[1]); // verify valid JS syntax offline
+  assert.ok(walletLlmsTxt("https://nuriwallet.com").split("\n").length <= 40);
+  assert.ok(walletSkillMd("https://nuriwallet.com").includes("mcp_endpoint: https://nuriwallet.com/mcp"));
 }
 
 // 2. Full cross-rail + on-chain + chained create_url + smart dual-rail 402 E2E
@@ -717,7 +747,122 @@ try {
   assert.equal(claimedHist?.status, "done", "auto-claimed receive must be done in history");
 
   walletTool.close();
-  console.log("cross-rail v2 check ok: background pushClaim auto-claim, pending send fate refresh, chained create_url, universal to, dual-rail auto-pick + capHint, cross-rail max_amount/max_sats guards, pending idempotency replay, USDC->BOLT11, USDC->L402 bridge, Arkade->x402 bridge, bc1/BIP21 from BTC & USDC, and Monero->SwapKit redirect verified");
+
+  // L. Real HTTP server checks for host-aware GET /, /llms.txt, /skill.md, and GET /mcp 405 hint
+  const freePort = await new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once("error", reject);
+    srv.listen(0, "127.0.0.1", () => {
+      const addr = srv.address();
+      srv.close(() => resolve(addr.port));
+    });
+  });
+  const serverEntry = fileURLToPath(new URL("../src/wallet-server.mjs", import.meta.url));
+  const child = spawn(process.execPath, [serverEntry], {
+    cwd: tmpDir,
+    env: {
+      PATH: process.env.PATH,
+      HOST: "127.0.0.1",
+      SERVICE_MODE: "wallet",
+      SERVICE_PORT: String(freePort),
+      SHORT_LINKS_DB: join(tmpDir, "http-check.sqlite"),
+      SERVICE_RPC_SECRET: "33".repeat(20),
+      AGENT_COSIGNER_URL: "http://127.0.0.1:1",
+      AGENT_COSIGNER_RPC_SECRET: "offline-check-secret",
+      AGENT_KERNEL_ENCRYPTION_KEY: "22".repeat(32),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let childStderr = "";
+  child.stderr.on("data", (chunk) => { childStderr += chunk.toString(); });
+  const httpReq = (path, { method = "GET", headers = {} } = {}) =>
+    new Promise((resolve, reject) => {
+      const req = http.request({ host: "127.0.0.1", port: freePort, path, method, headers }, (res) => {
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString("utf8") }));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+  try {
+    let healthy = false;
+    for (let i = 0; i < 40; i += 1) {
+      try {
+        const h = await httpReq("/healthz");
+        if (h.status === 200) { healthy = true; break; }
+      } catch {}
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(healthy, `wallet-server failed to boot for HTTP check: ${childStderr}`);
+
+    for (const [hdrs, expectedHost] of [
+      [{ Host: "wallet.paymentrequired.com" }, "wallet.paymentrequired.com"],
+      [{ Host: "wallet.nuri.com" }, "wallet.nuri.com"],
+      [{ Host: "nuriwallet.com" }, "nuriwallet.com"],
+      [{ "X-Forwarded-Host": "nuriwallet.com", Host: "127.0.0.1:8798" }, "nuriwallet.com"],
+      [{ Host: "evil.example.com" }, "wallet.paymentrequired.com"],
+    ]) {
+      const origin = `https://${expectedHost}`;
+      const home = await httpReq("/", { headers: hdrs });
+      assert.equal(home.status, 200);
+      assert.match(home.headers["content-type"], /text\/html/);
+      assert.equal(home.headers["cross-origin-opener-policy"], "same-origin-allow-popups");
+      assert.ok(home.body.includes(`<title>${expectedHost} — Agent Wallet</title>`));
+      assert.ok(home.body.includes(`${origin}/mcp`));
+      assert.ok(home.body.includes(`${origin}/llms.txt`));
+      assert.ok(home.body.includes(`${origin}/skill.md`));
+      assert.ok(home.body.includes("Create New Passkey Wallet"));
+      assert.ok(home.body.includes("Connect Existing Nuri Passkey"));
+      assert.ok(home.body.includes("Create Lightning Funding Invoice (sats)"));
+      assert.ok(home.body.includes("Copy MCP URL"));
+      assert.ok(home.body.includes("Copy Agent Prompt"));
+      assert.ok(!home.body.includes("Privy v1"), "homepage must not show stale Privy v1 copy");
+      assert.ok(!home.body.includes("/bridge/privy"), "homepage must not show legacy /bridge/privy copy");
+      assert.ok(!home.body.includes("signer.paymentrequired.com"), "homepage must not show signer.paymentrequired.com clutter");
+      assert.ok(!home.body.includes("evil.example.com"), "untrusted Host must never reflect into HTML");
+
+      const llms = await httpReq("/llms.txt", { headers: hdrs });
+      assert.equal(llms.status, 200);
+      assert.match(llms.headers["content-type"], /text\/plain/);
+      assert.ok(llms.body.includes(`# Agent Wallet (${expectedHost})`));
+      assert.ok(llms.body.includes(`${origin}/mcp`));
+      assert.ok(llms.body.includes(`NEVER send the person to \`${origin}/\``));
+      assert.ok(llms.body.includes("Create / Connect Agent Wallet"));
+      assert.ok(llms.body.includes("0.00025"));
+      assert.ok(llms.body.includes("https://mail.paymentrequired.com/v1/create_inbox"));
+      assert.ok(llms.body.includes("https://browser.paymentrequired.com/v1/browser/open"));
+      assert.ok(llms.body.includes("https://vault.paymentrequired.com"));
+      assert.ok(llms.body.includes("https://swapkit.nuri.com/mcp"));
+      assert.ok(!llms.body.includes("evil.example.com"));
+
+      const skill = await httpReq("/skill.md", { headers: hdrs });
+      assert.equal(skill.status, 200);
+      assert.match(skill.headers["content-type"], /text\/markdown/);
+      assert.ok(skill.body.includes(`mcp_endpoint: ${origin}/mcp`));
+      assert.ok(skill.body.includes(`# Agent Wallet (${expectedHost})`));
+      assert.ok(!skill.body.includes("evil.example.com"));
+
+      const mcpGet = await httpReq("/mcp", { headers: hdrs });
+      assert.equal(mcpGet.status, 405);
+      const mcpJson = JSON.parse(mcpGet.body);
+      assert.equal(mcpJson.hint, `POST JSON-RPC to this URL. Start: ${origin}/llms.txt`);
+    }
+
+    for (const p of ["/", "/llms.txt", "/skill.md"]) {
+      const headRes = await httpReq(p, { method: "HEAD", headers: { Host: "wallet.nuri.com" } });
+      assert.equal(headRes.status, 200);
+      assert.equal(headRes.body, "");
+    }
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise((resolve) => child.once("exit", resolve));
+      child.kill("SIGTERM");
+      await exited;
+    }
+  }
+
+  console.log("cross-rail v2 check ok: background pushClaim auto-claim, pending send fate refresh, chained create_url, universal to, dual-rail auto-pick + capHint, cross-rail max_amount/max_sats guards, pending idempotency replay, USDC->BOLT11, USDC->L402 bridge, Arkade->x402 bridge, bc1/BIP21 from BTC & USDC, Monero->SwapKit redirect, and host-aware /, /llms.txt, /skill.md, /mcp 405 verified");
 } finally {
   Object.keys(process.env).forEach((k) => {
     if (!(k in savedEnv)) delete process.env[k];

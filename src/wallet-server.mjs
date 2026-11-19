@@ -17,7 +17,7 @@ import { createConnectionEffects } from "./mcp-connection-effects.mjs";
 import { createBrowserSessionStore } from "./browser-session-store.mjs";
 import { createSignerClient } from "./signer-client.mjs";
 import { readServiceMode } from "./service-mode.mjs";
-import { serviceIndexHtml } from "./service-index.mjs";
+import { resolveWalletOrigin, serviceIndexHtml, walletLlmsTxt, walletSkillMd, WALLET_HOSTS } from "./service-index.mjs";
 import { createServiceRpcServer, createRemoteTool } from "./service-rpc.mjs";
 import { createIdentityHandoff, qualifiedIdentity } from "./identity-handoff.mjs";
 import { readRootSignerConfig, createRootSignerHook } from "./signer-broker-hook.mjs";
@@ -158,7 +158,9 @@ const serviceRpc = createServiceRpcServer({ secret: SERVICE.rpcSecret, readJson,
 const mcpTools = mcpConnection.tools();
 const WIRE_TOOLS = mcpTools.map(({ outputSchema, ...tool }) => tool);
 const INITIALIZE_INSTRUCTIONS = instructions(mcpTools.map((tool) => tool.name));
-const ROOT_HTML = serviceIndexHtml("wallet");
+const HOME_BY_ORIGIN = new Map(WALLET_HOSTS.map((h) => [`https://${h}`, serviceIndexHtml("wallet", { origin: `https://${h}` })]));
+const LLMS_BY_ORIGIN = new Map(WALLET_HOSTS.map((h) => [`https://${h}`, walletLlmsTxt(`https://${h}`)]));
+const SKILL_BY_ORIGIN = new Map(WALLET_HOSTS.map((h) => [`https://${h}`, walletSkillMd(`https://${h}`)]));
 const pendingApprovalLimiter = createKycCapabilityLimiter();
 
 const server = http.createServer(async (req, res) => {
@@ -176,7 +178,21 @@ const server = http.createServer(async (req, res) => {
       return writeJson(req, res, 200, { ok: true, version: VERSION, git_sha: GIT_SHA, built_at: process.env.BUILT_AT || null, built_by: process.env.BUILT_BY || null, release_phase: "prototyping",
         tools: mcpTools.map((tool) => tool.name), service_mode: SERVICE.mode, public_base: browserBridge.publicBase, aa_rpc: aaConfig.bundlerUrl });
     }
-    if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/") return writeHtml(req, res, 200, ROOT_HTML);
+    if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/") {
+      const origin = resolveWalletOrigin(req);
+      return writeHtml(req, res, 200, HOME_BY_ORIGIN.get(origin) || serviceIndexHtml("wallet", { origin }), {
+        "Cross-Origin-Opener-Policy": "same-origin-allow-popups",
+        Vary: "Host, X-Forwarded-Host",
+      });
+    }
+    if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/llms.txt") {
+      const origin = resolveWalletOrigin(req);
+      return writeText(req, res, 200, LLMS_BY_ORIGIN.get(origin) || walletLlmsTxt(origin), "text/plain; charset=utf-8");
+    }
+    if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/skill.md") {
+      const origin = resolveWalletOrigin(req);
+      return writeText(req, res, 200, SKILL_BY_ORIGIN.get(origin) || walletSkillMd(origin), "text/markdown; charset=utf-8");
+    }
     if ((url.pathname === "/bridge/privy" || url.pathname === "/bridge/privy/") && req.method === "GET") {
       return writePrivyHtml(req, res, 200, await browserBridge.privyBridgeHtml());
     }
@@ -259,9 +275,10 @@ server.listen(PORT, HOST, () => {
 });
 
 async function handleMcp(req, res) {
+  const reqOrigin = resolveWalletOrigin(req);
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST, OPTIONS");
-    return writeJson(req, res, 405, { ok: false, error: "method_not_allowed", hint: "POST JSON-RPC to this URL. Start: https://paymentrequired.com/llms.txt" });
+    return writeJson(req, res, 405, { ok: false, error: "method_not_allowed", hint: `POST JSON-RPC to this URL. Start: ${reqOrigin}/llms.txt` });
   }
   const message = await readJson(req);
   if (!message || message.jsonrpc !== "2.0" || typeof message.method !== "string") return writeJson(req, res, 200, mcpError(message?.id ?? null, -32600, "Invalid Request"));
@@ -270,7 +287,7 @@ async function handleMcp(req, res) {
     return writeJson(req, res, 200, mcpResult(message.id, {
       protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: { tools: {} },
-      serverInfo: { name: "paymentrequired-wallet", title: "paymentrequired.com — wallet for AI agents", version: VERSION, websiteUrl: PUBLIC_ORIGIN },
+      serverInfo: { name: "paymentrequired-wallet", title: `${new URL(reqOrigin).host} — wallet for AI agents`, version: VERSION, websiteUrl: reqOrigin },
       instructions: INITIALIZE_INSTRUCTIONS,
     }));
   }
@@ -341,7 +358,7 @@ function sendJson(req, res, status, payload, extraHeaders = {}) {
   if (status === 204) return res.end();
   res.end(payload);
 }
-function writeHtml(req, res, status, body) {
+function writeHtml(req, res, status, body, extraHeaders = {}) {
   writeRaw(req, res, status, body, {
     "Content-Type": "text/html; charset=utf-8",
     "Cache-Control": "no-store",
@@ -350,6 +367,15 @@ function writeHtml(req, res, status, body) {
       "form-action 'none'", "frame-ancestors 'none'", "img-src 'self' data:", "object-src 'none'",
       "script-src 'self' 'unsafe-inline'", "style-src 'self' 'unsafe-inline'", "worker-src blob:",
     ].join("; "),
+    ...extraHeaders,
+  });
+}
+function writeText(req, res, status, body, contentType) {
+  writeRaw(req, res, status, body, {
+    "Content-Type": contentType,
+    "Cache-Control": "no-store",
+    "Cross-Origin-Resource-Policy": "cross-origin",
+    Vary: "Host, X-Forwarded-Host",
   });
 }
 const EMBED_ANCESTORS = ["'self'", ...CORS_EXTRA_ORIGINS].join(" ");
