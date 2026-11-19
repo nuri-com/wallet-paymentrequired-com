@@ -1231,6 +1231,39 @@ try {
   assert.equal(repeatOnboard.ok, true);
   assert.equal(repeatOnboard.wallet_key, undefined);
 
+  // Reconnecting with the SAME Passkey PRF (new session `onboard-reconnect`) MUST deterministically
+  // return the EXACT SAME `npw1_...` wallet_key, Safe address, and Arkade address!
+  const reconStart = await walletTool.call({ action: "balance", new: true, request_id: "onboard-reconnect" });
+  assert.equal(reconStart.status, "connect_required");
+  assert.equal(reconStart.create_url, `${mockOrigin}/`);
+  const reconSessionId = new URL(reconStart.approval_url).searchParams.get("session_id");
+  const reconSessRec = connectSessions.get(reconSessionId);
+  const reconReply = encryptGrantForTest({
+    prfBytes: hex.decode(vector.prf_hex),
+    sessionId: reconSessionId,
+    replyPubkey: reconSessRec.payload.reply_pubkey,
+    index: reconSessRec.payload.index,
+    policy: reconSessRec.payload.policy,
+  });
+  const reconSig = await MAIN_WALLET_ACCOUNT.signMessage({
+    message: agentGrantProofMessage({
+      sessionId: reconSessionId,
+      replyPubkey: reconSessRec.payload.reply_pubkey,
+      reply: reconReply,
+    }),
+  });
+  reconSessRec.status = "approved";
+  reconSessRec.wallet = {
+    cred_id_b64u: TEST_CRED_ID,
+    eth_user_eoa: MAIN_WALLET_ACCOUNT.address,
+  };
+  reconSessRec.result = { ...reconReply, address: MAIN_WALLET_ACCOUNT.address, signature: reconSig };
+  const reconFin = await walletTool.call({ action: "balance", request_id: "onboard-reconnect" });
+  assert.equal(reconFin.ok, true);
+  assert.equal(reconFin.wallet_key, walletKey);
+  assert.equal(reconFin.address, safeAddress);
+  assert.equal(reconFin.arkade_address, arkadeAddress);
+
   // Seed initial Base Safe USDC (5.00 USDC) and 2-of-2 Arkade VTXO (10,000 sats)
   chainState.balances.set(getAddress(safeAddress), 5_000_000n);
   const walletArkDecoded = ArkAddress.decode(arkadeAddress);

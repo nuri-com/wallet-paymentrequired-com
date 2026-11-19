@@ -392,12 +392,14 @@ export function createPrfWalletCoordinator({
       approvalUrl: started.approval_url || started.approvalUrl,
       expiresAt: started.expires_at ?? started.expiresAt,
     });
+    const createUrl = `${ensureConnect().origin}/`;
     return {
       ok: true,
       status: "connect_required",
       request_id: saved.requestId,
       approval_url: saved.approvalUrl,
-      next: "Show approval_url. After the person approves with their Nuri Passkey, repeat wallet balance with the same request_id.",
+      create_url: createUrl,
+      next: `Show approval_url to connect an existing Nuri Passkey (or if the person has no Nuri Passkey yet, open ${createUrl} to create one first, then approve approval_url). After approval, repeat wallet balance with the same request_id.`,
     };
   }
 
