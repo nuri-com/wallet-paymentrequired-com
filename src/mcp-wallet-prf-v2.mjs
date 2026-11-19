@@ -23,6 +23,7 @@ import {
   predictAgentSafeAddress,
   predictPasskeySignerAddress,
 } from "./agent-safe-v2.mjs";
+import { readSolanaUsdcBalance, solanaSignerFromAgentKey } from "./safe-pay-solana.mjs";
 import {
   PRF_WALLET_KEY_RE,
   isPrfWalletKey,
@@ -436,6 +437,7 @@ export function createPrfWalletCoordinator({
         arkadeRuntime: ensureArkade(),
         ensureRailFunded,
         getBtcUsdRate: resolveBtcUsdRate,
+        ...(process.env.SOLANA_RPC_URL ? { solanaRpcUrl: process.env.SOLANA_RPC_URL } : {}),
         ...(merchantFetch ? { merchantFetch } : {}),
       });
     }
@@ -661,9 +663,11 @@ export function createPrfWalletCoordinator({
     if (secrets?.agentBtcPrivHex) {
       await sweepPendingReceives(walletRecord, secrets.agentBtcPrivHex);
     }
-    const [usdcResult, arkResult] = await Promise.allSettled([
+    const solanaSigner = secrets?.agentEthPrivHex ? await solanaSignerFromAgentKey(secrets.agentEthPrivHex) : null;
+    const [usdcResult, arkResult, solanaResult] = await Promise.allSettled([
       ensureSafe().readUsdcBalanceUnits(walletRecord.safeAddress),
       ensureArkade().readBalance(walletRecord),
+      solanaSigner ? readSolanaUsdcBalance({ owner: solanaSigner.address, ...(process.env.SOLANA_RPC_URL ? { rpcUrl: process.env.SOLANA_RPC_URL } : {}) }) : 0n,
     ]);
 
     const usdcUnits = usdcResult.status === "fulfilled" ? usdcResult.value : 0n;
@@ -688,6 +692,8 @@ export function createPrfWalletCoordinator({
       sats: Number(arkadeState.sats),
       btc: formatSatsAsBtc(arkadeState.sats),
       ...(arkadeState.address ? { arkade_address: arkadeState.address } : {}),
+      ...(solanaSigner ? { solana_address: solanaSigner.address,
+        solana_usdc: unitsToDecimal(String(solanaResult.status === "fulfilled" ? solanaResult.value : 0n), 6) } : {}),
     };
   }
 
@@ -695,7 +701,8 @@ export function createPrfWalletCoordinator({
     const usdc = balances.available ?? "0";
     const sats = balances.sats ?? 0;
     const btcAddr = balances.arkade_address ? ` Arkade ${balances.arkade_address}` : "";
-    return `Show BOTH rails to the user: Base USDC ${usdc} (${balances.address}) AND Bitcoin ${sats} sats / ${balances.btc || "0"} BTC (${btcAddr ? `${btcAddr.trim()}; ` : ""}Lightning invoice via receive rail="lightning").`;
+    const solana = balances.solana_address ? ` AND Solana USDC ${balances.solana_usdc || "0"} (${balances.solana_address})` : "";
+    return `Show ALL rails to the user: Base USDC ${usdc} (${balances.address}) AND Bitcoin ${sats} sats / ${balances.btc || "0"} BTC (${btcAddr ? `${btcAddr.trim()}; ` : ""}Lightning invoice via receive rail="lightning")${solana}.`;
   }
 
   async function startOrPollOnboarding({ requestId, slotIndex = 0, policy = DEFAULT_GRANT_POLICY } = {}) {
@@ -906,6 +913,14 @@ export function createPrfWalletCoordinator({
     )
       .trim()
       .toLowerCase();
+
+    if (requestedRail === "solana" || requestedRail === "solana-usdc") {
+      const signer = await solanaSignerFromAgentKey(secrets.agentEthPrivHex);
+      const units = await readSolanaUsdcBalance({ owner: signer.address, ...(process.env.SOLANA_RPC_URL ? { rpcUrl: process.env.SOLANA_RPC_URL } : {}) });
+      return { ok: true, status: "done", rail: "solana-usdc", address: signer.address,
+        available: unitsToDecimal(String(units), 6),
+        next: `Send native Solana USDC to ${signer.address}; the sender can create its token account. No SOL is needed for x402 merchant-feePayer payments.` };
+    }
 
     if (requestedRail === "usdc") {
       const usdcUnits = await ensureSafe()
