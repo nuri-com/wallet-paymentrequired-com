@@ -49,11 +49,16 @@ const GIT_SHA = (process.env.GIT_SHA || "dev").slice(0, 12);
 const SERVICES_JSON = readFileSync(new URL("../public/services.json", import.meta.url), "utf8");
 const SHORT_LINK_HTML = readFileSync(new URL("../public/short-link.html", import.meta.url));
 const SHORT_LINK_JS = readFileSync(new URL("../public/short-link.mjs", import.meta.url));
+const FAVICON_SVG = readFileSync(new URL("../public/favicon.svg", import.meta.url));
+const FAVICON_ICO = readFileSync(new URL("../public/favicon.ico", import.meta.url));
+const APPLE_TOUCH_ICON_PNG = readFileSync(new URL("../public/apple-touch-icon.png", import.meta.url));
 
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = SERVICE.port;
 const MAX_BODY_BYTES = 256 * 1024;
 const MCP_PROTOCOL_VERSION = "2025-11-25";
+const SUPPORTED_MCP_VERSIONS = new Set(["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]);
+const PUBLIC_CORS_PATHS = new Set(["/mcp", "/v1/wallet", "/v1/balance", "/v1/receive", "/v1/pay", "/v1/history"]);
 const PUBLIC_ORIGIN = new URL(process.env.PUBLIC_ORIGIN || `http://localhost:${PORT}`).origin;
 const CORS_EXTRA_ORIGINS = parseCorsExtraOrigins(process.env.CORS_EXTRA_ORIGINS);
 
@@ -204,6 +209,15 @@ const server = http.createServer(async (req, res) => {
     if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/openapi.json") {
       const origin = resolveWalletOrigin(req);
       return writeText(req, res, 200, OPENAPI_BY_ORIGIN.get(origin) || JSON.stringify(walletOpenApiJson(origin), null, 2), "application/json; charset=utf-8");
+    }
+    if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/favicon.svg") {
+      return writeAsset(req, res, 200, FAVICON_SVG, "image/svg+xml");
+    }
+    if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/favicon.ico") {
+      return writeAsset(req, res, 200, FAVICON_ICO, "image/x-icon");
+    }
+    if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/apple-touch-icon.png") {
+      return writeAsset(req, res, 200, APPLE_TOUCH_ICON_PNG, "image/png");
     }
     if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/robots.txt") {
       const origin = resolveWalletOrigin(req);
@@ -363,21 +377,35 @@ async function handleMcp(req, res) {
       "text/plain; charset=utf-8",
     );
   }
-  if (req.method !== "POST") {
-    res.setHeader("Allow", "GET, POST, OPTIONS");
-    return writeJson(req, res, 405, { ok: false, error: "method_not_allowed", hint: `POST JSON-RPC to this URL. Start: ${reqOrigin}/llms.txt` });
-  }
-  const message = await readJson(req);
-  if (!message || message.jsonrpc !== "2.0" || typeof message.method !== "string") return writeJson(req, res, 200, mcpError(message?.id ?? null, -32600, "Invalid Request"));
-  if (message.method === "notifications/initialized") return writeJson(req, res, 202, {});
-  if (message.method === "initialize") {
-    return writeJson(req, res, 200, mcpResult(message.id, {
-      protocolVersion: MCP_PROTOCOL_VERSION,
-      capabilities: { tools: {} },
-      serverInfo: { name: "paymentrequired-wallet", title: `${new URL(reqOrigin).host} — wallet for AI agents`, version: VERSION, websiteUrl: reqOrigin },
-      instructions: INITIALIZE_INSTRUCTIONS,
-    }));
-  }
+    if (req.method === "DELETE") {
+      return writeJson(req, res, 204, {});
+    }
+    if (req.method !== "POST") {
+      res.setHeader("Allow", "GET, POST, DELETE, OPTIONS");
+      return writeJson(req, res, 405, { ok: false, error: "method_not_allowed", hint: `POST JSON-RPC to this URL. Start: ${reqOrigin}/llms.txt` });
+    }
+    const message = await readJson(req);
+    if (!message || message.jsonrpc !== "2.0" || typeof message.method !== "string") return writeJson(req, res, 200, mcpError(message?.id ?? null, -32600, "Invalid Request"));
+    if (message.method === "notifications/initialized") return writeJson(req, res, 202, {});
+    if (message.method === "initialize") {
+      const requestedVersion = typeof message.params?.protocolVersion === "string" ? message.params.protocolVersion.trim() : "";
+      const protocolVersion = SUPPORTED_MCP_VERSIONS.has(requestedVersion) ? requestedVersion : MCP_PROTOCOL_VERSION;
+      return writeJson(req, res, 200, mcpResult(message.id, {
+        protocolVersion,
+        capabilities: { tools: {} },
+        serverInfo: {
+          name: "paymentrequired-wallet",
+          title: `${new URL(reqOrigin).host} — wallet for AI agents`,
+          version: VERSION,
+          websiteUrl: reqOrigin,
+          icons: [
+            { src: `${reqOrigin}/favicon.svg`, mimeType: "image/svg+xml" },
+            { src: `${reqOrigin}/apple-touch-icon.png`, mimeType: "image/png", sizes: ["180x180"] },
+          ],
+        },
+        instructions: INITIALIZE_INSTRUCTIONS,
+      }));
+    }
   if (message.method === "tools/list") return writeJson(req, res, 200, mcpResult(message.id, { tools: WIRE_TOOLS }));
   if (message.method === "tools/call") {
     const name = message.params?.name;
@@ -430,20 +458,38 @@ function writePageJson(req, res, status, body, extraHeaders = {}) {
   sendJson(req, res, status, JSON.stringify(body, null, 2), extraHeaders);
 }
 function sendJson(req, res, status, payload, extraHeaders = {}) {
+  const pathname = String(req.url || "/").split("?")[0];
+  const isPublicStateless = PUBLIC_CORS_PATHS.has(pathname);
   const headers = {
     "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "content-type, authorization, mcp-protocol-version",
+    "Access-Control-Allow-Methods": isPublicStateless ? "GET, POST, DELETE, OPTIONS" : "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "content-type, authorization, mcp-protocol-version, mcp-session-id, last-event-id",
     "Cache-Control": "no-store",
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
     ...extraHeaders,
   };
-  const origin = allowedCorsOrigin(req.headers.origin);
-  if (origin) { headers["Access-Control-Allow-Origin"] = origin; headers.Vary = "Origin"; }
+  if (isPublicStateless) {
+    headers["Access-Control-Allow-Origin"] = "*";
+    headers["Access-Control-Expose-Headers"] = "mcp-protocol-version, mcp-session-id";
+  } else {
+    const origin = allowedCorsOrigin(req.headers.origin);
+    if (origin) { headers["Access-Control-Allow-Origin"] = origin; headers.Vary = "Origin"; }
+  }
   res.writeHead(status, headers);
-  if (status === 204) return res.end();
+  if (status === 204 || req.method === "HEAD") return res.end();
   res.end(payload);
+}
+function writeAsset(req, res, status, body, contentType) {
+  const headers = {
+    "Content-Type": contentType,
+    "Cache-Control": "public, max-age=86400",
+    "Cross-Origin-Resource-Policy": "cross-origin",
+    "X-Content-Type-Options": "nosniff",
+  };
+  res.writeHead(status, headers);
+  if (req.method === "HEAD") return res.end();
+  res.end(body);
 }
 function writeHtml(req, res, status, body, extraHeaders = {}) {
   writeRaw(req, res, status, body, {

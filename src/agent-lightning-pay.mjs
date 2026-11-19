@@ -433,7 +433,7 @@ export function createPrfHttp402Payer({
     const first = await merchantFetch(url, { headers: {}, shape });
     if (first.status !== 402) {
       return {
-        status: "done",
+        status: first.status >= 200 && first.status < 300 ? "done" : "failed",
         paid: false,
         http_status: first.status,
         resource: formatResourceBody(first),

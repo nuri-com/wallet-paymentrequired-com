@@ -27,6 +27,7 @@ import { xchacha20poly1305 } from "@noble/ciphers/chacha";
 import { decodeBolt11 } from "@arkade-os/swap/advanced";
 import { createMcpWalletTool, WALLET_TOOL } from "../src/mcp-wallet-tool.mjs";
 import { instructions } from "../src/mcp-instructions.mjs";
+import { requestShape } from "../src/agent-kernel-runtime.mjs";
 import {
   resolveWalletOrigin,
   serviceIndexHtml,
@@ -907,19 +908,61 @@ try {
       assert.ok(sitemap.body.includes(`<loc>${origin}/llms.txt</loc>`));
     }
 
-    for (const p of ["/", "/llms.txt", "/skill.md", "/openapi.json", "/robots.txt", "/sitemap.xml", "/mcp", "/v1/wallet"]) {
+    for (const p of ["/", "/llms.txt", "/skill.md", "/openapi.json", "/robots.txt", "/sitemap.xml", "/favicon.svg", "/favicon.ico", "/apple-touch-icon.png", "/mcp", "/v1/wallet"]) {
       const headRes = await httpReq(p, { method: "HEAD", headers: { Host: "wallet.nuri.com" } });
-      assert.equal(headRes.status, 200);
+      assert.equal(headRes.status, 200, `HEAD ${p} should return 200`);
       assert.equal(headRes.body, "");
     }
 
-    // Plain JSON REST /v1/* tests (zero MCP setup): anonymous balance returns connect_required
+    // Real Nuri brand icons + 1-click install links on homepage
+    const svgRes = await httpReq("/favicon.svg", { headers: { Host: "wallet.nuri.com" } });
+    assert.equal(svgRes.status, 200);
+    assert.match(svgRes.headers["content-type"], /image\/svg\+xml/);
+    assert.ok(svgRes.body.includes("#F25E0D"), "favicon.svg must be real Nuri brand SVG");
+
+    const homeHtml = await httpReq("/", { headers: { Host: "wallet.nuri.com" } });
+    assert.ok(homeHtml.body.includes('href="/favicon.svg"'));
+    assert.ok(homeHtml.body.includes("cursor://anysphere.cursor-deeplink/mcp/install"));
+    assert.ok(homeHtml.body.includes("vscode:mcp/install?"));
+
+    // MCP protocol version negotiation + icons + open CORS for claude.ai / ChatGPT / MCP Inspector
+    for (const ver of ["2025-03-26", "2025-06-18", "2025-11-25"]) {
+      const initRes = await httpReq("/mcp", {
+        method: "POST",
+        headers: { Host: "wallet.nuri.com", Origin: "https://claude.ai", "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: ver, capabilities: {}, clientInfo: { name: "test", version: "1" } } }),
+      });
+      assert.equal(initRes.status, 200);
+      assert.equal(initRes.headers["access-control-allow-origin"], "*");
+      assert.match(initRes.headers["access-control-allow-headers"], /mcp-session-id/i);
+      const initJson = JSON.parse(initRes.body);
+      assert.equal(initJson.result.protocolVersion, ver);
+      assert.ok(Array.isArray(initJson.result.serverInfo.icons) && initJson.result.serverInfo.icons.length >= 1);
+      assert.equal(initJson.result.serverInfo.icons[0].src, "https://wallet.nuri.com/favicon.svg");
+      assert.ok(initJson.result.instructions.includes("ALWAYS show BOTH rails"));
+    }
+
+    // DELETE /mcp returns 204 cleanly for stateless Streamable HTTP clients
+    const delRes = await httpReq("/mcp", { method: "DELETE", headers: { Host: "wallet.nuri.com", Origin: "https://claude.ai" } });
+    assert.equal(delRes.status, 204);
+    assert.equal(delRes.headers["access-control-allow-origin"], "*");
+
+    // JSON-string body auto-detection in requestShape (prevents Content-Type: text/plain 400 on LLM JSON strings)
+    const jsonStrShape = requestShape({ method: "POST", body: '{"model":"gemini-4-argon-high","messages":[]}' });
+    assert.equal(jsonStrShape.headers["Content-Type"], "application/json");
+    const plainStrShape = requestShape({ method: "POST", body: "hello world" });
+    assert.equal(plainStrShape.headers["Content-Type"], "text/plain; charset=utf-8");
+    const explicitTypeShape = requestShape({ method: "POST", body: '{"a":1}', contentType: "application/merge-patch+json" });
+    assert.equal(explicitTypeShape.headers["Content-Type"], "application/merge-patch+json");
+
+    // Plain JSON REST /v1/* tests (zero MCP setup): anonymous balance returns connect_required + open CORS
     const restAnon = await httpReq("/v1/wallet", {
       method: "POST",
-      headers: { Host: "wallet.paymentrequired.com", "Content-Type": "application/json" },
+      headers: { Host: "wallet.paymentrequired.com", Origin: "https://chatgpt.com", "Content-Type": "application/json" },
       body: JSON.stringify({ action: "balance" }),
     });
     assert.equal(restAnon.status, 200);
+    assert.equal(restAnon.headers["access-control-allow-origin"], "*");
     const restAnonJson = JSON.parse(restAnon.body);
     assert.equal(restAnonJson.status, "connect_required");
     assert.ok(restAnonJson.approval_url);
