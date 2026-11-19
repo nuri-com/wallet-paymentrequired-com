@@ -158,18 +158,25 @@ function encryptGrant({ prfBytes, sessionId, replyPubkey, index = 0, policy }) {
   );
 
   // Host-aware origin resolution & inline script syntax
+  assert.equal(resolveWalletOrigin("agent.nuri.com"), "https://agent.nuri.com");
   assert.equal(resolveWalletOrigin("wallet.paymentrequired.com"), "https://wallet.paymentrequired.com");
   assert.equal(resolveWalletOrigin("wallet.nuri.com:443"), "https://wallet.nuri.com");
   assert.equal(resolveWalletOrigin("nuriwallet.com"), "https://nuriwallet.com");
+  assert.equal(resolveWalletOrigin({ headers: { "x-forwarded-host": "agent.nuri.com, 10.0.0.1", host: "127.0.0.1:8798" } }), "https://agent.nuri.com");
   assert.equal(resolveWalletOrigin({ headers: { "x-forwarded-host": "nuriwallet.com, 10.0.0.1", host: "127.0.0.1:8798" } }), "https://nuriwallet.com");
   assert.equal(resolveWalletOrigin("evil.example.com"), "https://wallet.paymentrequired.com");
-  const homeHtml = serviceIndexHtml("wallet", { origin: "https://wallet.nuri.com" });
+  const homeHtml = serviceIndexHtml("wallet", { origin: "https://agent.nuri.com" });
   const scriptMatch = homeHtml.match(/<script>([\s\S]*?)<\/script>/);
   assert.ok(scriptMatch, "homepage must include inline setup widget script");
   new Function(scriptMatch[1]); // verify valid JS syntax offline
+  assert.ok(homeHtml.includes('id="tt"'), "homepage must include dark/light theme toggle");
+  assert.ok(homeHtml.includes("A real money account"), "homepage must use unified Nuri design");
+  assert.ok(homeHtml.includes("calls.nuri.com"), "homepage must link live calls.nuri.com companion");
   assert.ok(scriptMatch[1].includes('to: "https://mail.paymentrequired.com/v1/create_inbox"'), "test payment must pass to:");
   assert.ok(!scriptMatch[1].includes('target: "https://mail.paymentrequired.com'), "test payment must not pass unknown field target:");
   assert.ok(scriptMatch[1].includes("body: { request_id: reqId }"), "test payment must pass mail request_id body");
+  assert.ok(walletLlmsTxt("https://agent.nuri.com").split("\n").length <= 40);
+  assert.ok(walletSkillMd("https://agent.nuri.com").includes("mcp_endpoint: https://agent.nuri.com/mcp"));
   assert.ok(walletLlmsTxt("https://nuriwallet.com").split("\n").length <= 40);
   assert.ok(walletSkillMd("https://nuriwallet.com").includes("mcp_endpoint: https://nuriwallet.com/mcp"));
 }
@@ -801,6 +808,8 @@ try {
     assert.ok(healthy, `wallet-server failed to boot for HTTP check: ${childStderr}`);
 
     for (const [hdrs, expectedHost] of [
+      [{ Host: "agent.nuri.com" }, "agent.nuri.com"],
+      [{ "X-Forwarded-Host": "agent.nuri.com", Host: "127.0.0.1:8798" }, "agent.nuri.com"],
       [{ Host: "wallet.paymentrequired.com" }, "wallet.paymentrequired.com"],
       [{ Host: "wallet.nuri.com" }, "wallet.nuri.com"],
       [{ Host: "nuriwallet.com" }, "nuriwallet.com"],
