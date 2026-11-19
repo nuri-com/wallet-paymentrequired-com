@@ -683,12 +683,20 @@ export function createPrfWalletCoordinator({
 
     return {
       available: unitsToDecimal(String(usdcUnits), 6),
+      usdc: unitsToDecimal(String(usdcUnits), 6),
       address: walletRecord.safeAddress,
       owner_address: walletRecord.mainEoa,
       sats: Number(arkadeState.sats),
       btc: formatSatsAsBtc(arkadeState.sats),
       ...(arkadeState.address ? { arkade_address: arkadeState.address } : {}),
     };
+  }
+
+  function dualBalanceSummary(balances) {
+    const usdc = balances.available ?? "0";
+    const sats = balances.sats ?? 0;
+    const btcAddr = balances.arkade_address ? ` Arkade ${balances.arkade_address}` : "";
+    return `Show BOTH rails to the user: Base USDC ${usdc} (${balances.address}) AND Bitcoin ${sats} sats / ${balances.btc || "0"} BTC (${btcAddr ? `${btcAddr.trim()}; ` : ""}Lightning invoice via receive rail="lightning").`;
   }
 
   async function startOrPollOnboarding({ requestId, slotIndex = 0, policy = DEFAULT_GRANT_POLICY } = {}) {
@@ -706,8 +714,8 @@ export function createPrfWalletCoordinator({
             ...(issuedKey ? { wallet_key: issuedKey } : {}),
             ...balances,
             next: issuedKey
-              ? "Save wallet_key and send it on every wallet call."
-              : "Wallet already connected; use the wallet_key returned earlier.",
+              ? `Save wallet_key and send it on every wallet call. ${dualBalanceSummary(balances)}`
+              : `Wallet already connected; use the wallet_key returned earlier. ${dualBalanceSummary(balances)}`,
           };
         }
         if (existing.status === "expired") {
@@ -832,7 +840,7 @@ export function createPrfWalletCoordinator({
           status: "done",
           wallet_key: issuedKey,
           ...balances,
-          next: "Save wallet_key and send it on every later wallet call.",
+          next: `Save wallet_key and send it on every later wallet call. ${dualBalanceSummary(balances)}`,
         };
       }
     }
@@ -882,7 +890,7 @@ export function createPrfWalletCoordinator({
         ok: true,
         status: "done",
         ...balances,
-        next: "Holdings shown.",
+        next: `Holdings shown. ${dualBalanceSummary(balances)}`,
       };
     }
     return await startOrPollOnboarding({
@@ -1388,6 +1396,12 @@ export function createPrfWalletCoordinator({
           ok: res.status !== "failed",
           status: res.status,
           request_id: reqId,
+          ...(res.http_status !== undefined ? { http_status: res.http_status } : {}),
+          ...(res.status === "failed" && res.http_status !== undefined
+            ? {
+                error: `Endpoint returned HTTP ${res.http_status}${res.paid ? " after payment" : " (not paid)"}. Inspect resource.body for the exact server error.`,
+              }
+            : {}),
           ...(res.protocol ? { protocol: res.protocol } : {}),
           ...(res.rail ? { rail: res.rail } : {}),
           ...(res.funded_from ? { funded_from: res.funded_from } : {}),

@@ -42,10 +42,10 @@ export function instructions(toolNames = ALWAYS_TOOLS) {
 ${WHICH.wallet}
 
 RULES
-1. No wallet_key yet: call wallet {action: "balance"}. Show BOTH create_url (new to Nuri) and approval_url (existing Passkey). After approval, repeat wallet {action: "balance", request_id} to get your deterministic wallet_key (npw1_...).
-2. Hold a wallet_key: send it on every call (balance, receive, pay, history).
-3. wallet pay accepts ANY destination in \`to\`: https:// 402 API (x402/L402/MPP), lnbc... BOLT11, user@domain, bc1.../bitcoin:... on-chain Bitcoin, ark1... Arkade, or 0x... Base USDC. Always include a short request_id.
-4. Over-cap error: STOP and tell the person the exact price; NEVER raise max_amount/max_sats without asking them first. Once they approve, send again with a NEW request_id and a higher max_amount. Other failures: report the exact error. Do what next says.
+1. No wallet_key: call wallet {action: "balance"}. Show create_url (new) and approval_url (existing). After approval, repeat balance with same request_id to get wallet_key (npw1_...).
+2. Hold wallet_key: send on every call. On balance/connect, ALWAYS show BOTH rails: Bitcoin (sats + arkade_address + Lightning receive) AND Base USDC (available + 0x address).
+3. wallet pay accepts any \`to\`: https:// 402 API, lnbc..., user@domain, bc1.../bitcoin:..., ark1..., or 0x.... Include a short request_id.
+4. Over-cap error: STOP, state exact price; never raise max_amount/max_sats without asking. After approval, retry with NEW request_id. Other errors: report verbatim. Follow next.
 
 EXAMPLES
 ${EXAMPLES.filter(([need]) => need.every(name => here.has(name))).map(([, text]) => `- ${text}`).join("\n")}

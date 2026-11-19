@@ -257,12 +257,13 @@ function walletIndexHtml(origin) {
   const openapiUrl = `${base}/openapi.json`;
   const llmsUrl = `${base}/llms.txt`;
   const skillUrl = `${base}/skill.md`;
-  const agentPrompt = [
-    `Use my Agent Wallet at ${base} (instructions: ${llmsUrl}).`,
-    `MCP endpoint: ${mcpUrl} — or plain HTTP POST ${restUrl} (no MCP needed if you have curl/HTTP).`,
-    "Actions: balance, receive, pay, history (Base USDC + Bitcoin Lightning/Arkade/on-chain BTC with auto cross-rail).",
-    'If no wallet_key is set yet, call balance without wallet_key and show me both create_url and approval_url.',
-  ].join("\n");
+  const agentPrompt = `Use my Nuri Agent Wallet at ${base} (read ${llmsUrl} and start wallet balance).`;
+  const cursorCfg = Buffer.from(JSON.stringify({ url: mcpUrl }), "utf8").toString("base64");
+  const cursorDeepLink = `cursor://anysphere.cursor-deeplink/mcp/install?name=nuri-wallet&config=${encodeURIComponent(cursorCfg)}`;
+  const vscodeCfg = encodeURIComponent(JSON.stringify({ name: "nuri-wallet", type: "http", url: mcpUrl }));
+  const vscodeDeepLink = `vscode:mcp/install?${vscodeCfg}`;
+  const claudeCodeCmd = `claude mcp add --transport http nuri-wallet ${mcpUrl}`;
+  const codexCmd = `codex mcp add nuri-wallet --url ${mcpUrl}`;
 
   return `<!doctype html>
 <html lang="en">
@@ -271,7 +272,12 @@ function walletIndexHtml(origin) {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${host} — Agent Wallet</title>
 <meta name="description" content="One passkey gives any AI agent non-custodial Bitcoin Lightning, Arkade, on-chain BTC, and Base USDC via 4 MCP actions or plain HTTP REST. No OAuth, no seed phrase, no custody.">
-<link rel="icon" href="data:,">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/x-icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta property="og:title" content="${host} — Agent Wallet">
+<meta property="og:description" content="Non-custodial Bitcoin Lightning, Arkade, on-chain BTC, and Base USDC wallet for AI agents. Authless MCP + plain HTTP REST.">
+<meta property="og:image" content="${base}/apple-touch-icon.png">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -457,7 +463,7 @@ footer a:hover{color:var(--fg)}
 
 <header><div class="wrap">
   <div class="topbar">
-    <a class="brand" href="${base}/"><span class="dot"></span>${host}</a>
+    <a class="brand" href="${base}/"><img src="/favicon.svg" alt="" width="20" height="20" style="border-radius:5px">${host}</a>
     <nav class="nav" aria-label="Agent docs">
       <a href="#setup-widget">setup</a>
       <a href="${llmsUrl}">llms.txt</a>
@@ -485,8 +491,11 @@ footer a:hover{color:var(--fg)}
     </div>
     <div class="hero-cta">
       <a href="#setup-widget" class="btn btn-primary">Create / Connect Agent Wallet &darr;</a>
-      <button type="button" class="btn btn-secondary" data-copy-text="prompt">Copy Agent Prompt</button>
-      <a href="${llmsUrl}" class="btn btn-secondary">Read llms.txt &rarr;</a>
+      <a href="${cursorDeepLink}" class="btn btn-secondary">1-Click Cursor</a>
+      <a href="${vscodeDeepLink}" class="btn btn-secondary">1-Click VS Code</a>
+      <button type="button" class="btn btn-secondary" data-copy-text="claude-code">Claude Code 1-liner</button>
+      <button type="button" class="btn btn-secondary" data-copy-text="codex">Codex 1-liner</button>
+      <button type="button" class="btn btn-secondary" data-copy-text="prompt">Copy 1-line Prompt</button>
     </div>
   </div>
 </div></header>
@@ -594,15 +603,19 @@ footer a:hover{color:var(--fg)}
 
       <hr class="sep">
 
-      <h3>Use With Your AI Agent</h3>
+      <h3>Use With Your AI Agent (1-Click Install)</h3>
       <div class="row">
-        <button type="button" class="btn btn-primary btn-sm" data-copy-text="mcp">Copy MCP URL</button>
-        <button type="button" class="btn btn-secondary btn-sm" data-copy-text="prompt">Copy Agent Prompt</button>
+        <a href="${cursorDeepLink}" class="btn btn-primary btn-sm">Install in Cursor</a>
+        <a href="${vscodeDeepLink}" class="btn btn-secondary btn-sm">Install in VS Code</a>
+        <button type="button" class="btn btn-secondary btn-sm" data-copy-text="claude-code">Claude Code 1-liner</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-copy-text="codex">Codex 1-liner</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-copy-text="mcp">Copy MCP URL</button>
+        <button type="button" class="btn btn-secondary btn-sm" data-copy-text="prompt">Copy 1-line Prompt</button>
         <button type="button" class="btn btn-secondary btn-sm" data-copy-text="curl">Copy cURL</button>
       </div>
       <p class="muted" style="margin-top:10px">
-        <strong>ChatGPT / Claude web:</strong> Settings &rarr; Connectors / Apps &rarr; Add <code>${mcpUrl}</code> (Auth: None).<br>
-        <strong>Claude Code / Codex / Goose / Cursor (no MCP needed):</strong> paste the Agent Prompt or call <code>POST ${restUrl}</code> directly with <code>wallet_key</code>.
+        <strong>Claude / ChatGPT web:</strong> Settings &rarr; Connectors / Apps &rarr; Add Custom Connector &rarr; <code>${mcpUrl}</code> (Auth: None).<br>
+        <strong>Goose / Claude Code / Codex (zero MCP setup):</strong> just tell your agent <code>Use my Nuri Agent Wallet at ${base}</code> — it calls <code>POST ${restUrl}</code> directly.
       </p>
     </div>
   </div>
@@ -712,6 +725,8 @@ curl -sX POST <span class="s">${base}/v1/pay</span> \\
   const MCP_URL = ${JSON.stringify(mcpUrl)};
   const REST_URL = ${JSON.stringify(restUrl)};
   const AGENT_PROMPT = ${JSON.stringify(agentPrompt)};
+  const CLAUDE_CODE_CMD = ${JSON.stringify(claudeCodeCmd)};
+  const CODEX_CMD = ${JSON.stringify(codexCmd)};
   const PENDING_KEY = "nuri_wallet_pending_v1";
   const CONNECTED_KEY = "nuri_wallet_connected_v1";
   const MASKED_KEY = "npw1_•••••••••••••••••••••••••••••••••••••••••••";
@@ -1146,6 +1161,10 @@ curl -sX POST <span class="s">${base}/v1/pay</span> \\
       copyText(MCP_URL, btn);
     } else if (btn.dataset.copyText === "prompt") {
       copyText(AGENT_PROMPT, btn);
+    } else if (btn.dataset.copyText === "claude-code") {
+      copyText(CLAUDE_CODE_CMD, btn);
+    } else if (btn.dataset.copyText === "codex") {
+      copyText(CODEX_CMD, btn);
     } else if (btn.dataset.copyText === "curl") {
       copyText(buildCurlSnippet(), btn);
     }
@@ -1199,7 +1218,8 @@ export function serviceIndexHtml(role, { origin } = {}) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${role}.paymentrequired.com — ${r.title}</title>
-<link rel="icon" href="data:,">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/x-icon" href="/favicon.ico" sizes="any">
 <style>
 html,body{margin:0;padding:0;background:#fdf6e3;color:#073642}
 body{font:17px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;overflow-x:hidden}

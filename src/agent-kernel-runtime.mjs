@@ -60,12 +60,26 @@ function merchantUrl(value) {
 // Content-Digest, so the same bytes are bound to the unpaid and the paid request.
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
 const ROUTER_CHAT_URL = 'https://router.paymentrequired.com/v1/chat/completions';
+function looksLikeJsonString(value) {
+  if (typeof value !== 'string') return false;
+  const trimmed = value.trim();
+  if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) return false;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed !== null && typeof parsed === 'object';
+  } catch {
+    return false;
+  }
+}
 export function requestShape({ method = 'GET', body, contentType } = {}) {
   check(METHODS.includes(method), 'invalid_http_method');
   if (body === undefined || body === null) return { method, headers: {}, bytes: null };
   const bytes = Buffer.from(typeof body === 'string' ? body : JSON.stringify(body), 'utf8');
   check(bytes.length <= 262144 && !['GET', 'HEAD'].includes(method), 'invalid_request_body');
-  return { method, bytes, headers: { 'Content-Type': contentType || (typeof body === 'string' ? 'text/plain; charset=utf-8' : 'application/json'),
+  const resolvedType = contentType || (typeof body === 'string'
+    ? (looksLikeJsonString(body) ? 'application/json' : 'text/plain; charset=utf-8')
+    : 'application/json');
+  return { method, bytes, headers: { 'Content-Type': resolvedType,
     'Content-Length': String(bytes.length), 'Content-Digest': `sha-256=:${createHash('sha256').update(bytes).digest('base64')}:` } };
 }
 // Every merchant request (quote and paid) names its client: live 2026-09-29 a merchant behind an AWS load
