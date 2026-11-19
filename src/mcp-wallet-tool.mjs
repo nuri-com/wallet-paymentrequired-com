@@ -122,7 +122,7 @@ function unconfirmedSentence(reason, noun) {
 export const WALLET_TOOL = {
   name: "wallet",
   title: "Agent USDC + Bitcoin/Lightning wallet",
-  description: "Agent's own Base USDC + Bitcoin Lightning/Arkade/on-chain wallet (4 actions: balance, receive, pay, history). First time: call balance with no wallet_key to create or connect a Nuri Passkey wallet. Cross-rail USDC <-> Bitcoin/Lightning converts automatically.",
+  description: "Agent's own Base + Solana USDC and Bitcoin Lightning/Arkade/on-chain wallet (4 actions: balance, receive, pay, history). First time: call balance with no wallet_key to create or connect a Nuri Passkey wallet. Base USDC <-> Bitcoin/Lightning converts automatically.",
   inputSchema: {
     type: "object", additionalProperties: false, required: ["action"],
     properties: {
@@ -131,12 +131,12 @@ export const WALLET_TOOL = {
       to: { type: "string", maxLength: 4096, description: "For pay: destination — https:// paid API, lnbc... BOLT11 invoice, user@domain Lightning Address, bc1.../bitcoin:... on-chain Bitcoin, ark1... Arkade, or 0x... Base USDC." },
       url: { type: "string", maxLength: 4096, description: "Optional alias for to when paying a paid https:// URL." },
       invoice: { type: "string", maxLength: 4096, description: "Optional alias for to when paying a BOLT11 lnbc... invoice." },
-      rail: { type: "string", enum: ["usdc", "lightning", "arkade"], description: "For receive: usdc (Base USDC address), lightning (BOLT11 invoice; needs amount_sats, includes small routing fee), or arkade (Arkade BTC address)." },
+      rail: { type: "string", enum: ["usdc", "solana", "lightning", "arkade"], description: "For receive: usdc (Base USDC), solana (native Solana USDC), lightning (BOLT11 invoice; needs amount_sats), or arkade (Arkade BTC)." },
       amount: { type: "string", pattern: "^(0|[1-9][0-9]{0,71})(\\.[0-9]{1,8})?$", description: "For 0x... Base USDC: decimal USDC (e.g. \"1.50\"). For bc1... on-chain Bitcoin: pass decimal BTC directly here (e.g. \"0.00025\") — do not convert BTC to sats yourself." },
       amount_sats: { type: "integer", minimum: 1, description: "Whole satoshis (for receive rail=lightning, or pay to user@domain / ark1... / bc1... when given in sats; omit for lnbc... invoices)." },
-      max_amount: { type: "string", pattern: AMOUNT.source, description: "Max Base USDC this one pay call may cost, e.g. \"0.25\"." },
+      max_amount: { type: "string", pattern: AMOUNT.source, description: "Max USDC this one pay call may cost on Base or Solana, e.g. \"0.25\"." },
       max_sats: { type: "integer", minimum: 1, description: "Max satoshis (incl. fees) this one Lightning / L402 / BTC pay may cost." },
-      prefer: { type: "string", maxLength: 64, description: "Optional on dual-rail 402 URLs: lightning, l402, mpp:lightning, usdc, x402, or mpp:evm (omitted = auto-pick funded rail)." },
+      prefer: { type: "string", maxLength: 64, description: "Optional on multi-rail 402 URLs: lightning, l402, mpp:lightning, usdc, x402, solana, or mpp:evm (omitted = auto-pick funded rail)." },
       dry_run: { type: "boolean", description: "For pay on https:// URLs: inspect 402 price without paying." },
       method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"], description: "For pay on https:// URLs: HTTP method (default GET)." },
       body: { description: "For pay on https:// URLs: HTTP request body." },

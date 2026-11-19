@@ -21,6 +21,7 @@ import { BASE_CHAIN_ID, BASE_USDC_ADDRESS } from "./agent-safe-v2.mjs";
 import { MERCHANT_HEADERS, requestShape } from "./agent-kernel-runtime.mjs";
 import { parseChallenge, payWithSafe, quoteOffer, selectOffer } from "./safe-pay.mjs";
 import { parseMppChallenges, payMppCharge, quoteMppOffer, selectMppOffer } from "./safe-pay-mpp.mjs";
+import { parseSolanaChallenge, payWithSolana, quoteSolanaOffer, readSolanaUsdcBalance, solanaSignerFromAgentKey } from "./safe-pay-solana.mjs";
 
 const denied = new BlockList();
 for (const [ip, bits] of [
@@ -342,6 +343,12 @@ export function classifyHttp402Response({
     }
   }
 
+  const solana = parseSolanaChallenge({ headers, bodyText });
+  if (solana) {
+    const offer = solana.offers[0];
+    candidates.push({ kind: "x402-solana", rail: "solana-usdc", required: solana.required, offer, amountUnits: offer.amount });
+  }
+
   if (/^\s*Payment\s/i.test(getHeader(headers, "www-authenticate") || "")) {
     try {
       const evmOffers = parseMppChallenges({ headers });
@@ -373,12 +380,13 @@ export function classifyHttp402Response({
     );
     if (ln) return ln;
   }
+  if (pref === "solana") return candidates.find((c) => c.kind === "x402-solana") || candidates[0];
   if (pref === "usdc" || pref === "x402" || pref === "mpp" || pref === "mpp:evm") {
     const evm = candidates.find(
       (c) =>
-        (pref === "x402" && c.kind === "x402") ||
+        (pref === "x402" && (c.kind === "x402" || c.kind === "x402-solana")) ||
         ((pref === "mpp" || pref === "mpp:evm") && c.kind === "mpp-evm") ||
-        c.rail === "usdc",
+        (pref === "usdc" && (c.rail === "usdc" || c.rail === "solana-usdc")),
     );
     if (evm) return evm;
   }
@@ -394,11 +402,12 @@ export function classifyHttp402Response({
       if (c.rail === "lightning") {
         return c.amountSats !== null && sats >= BigInt(c.amountSats);
       }
-      return c.amountUnits !== undefined && usdcUnits >= BigInt(c.amountUnits);
+      const available = c.rail === "solana-usdc" ? BigInt(balances.solanaUsdcUnits ?? 0n) : usdcUnits;
+      return c.amountUnits !== undefined && available >= BigInt(c.amountUnits);
     });
     if (funded.length > 0) {
       if (capHint) {
-        const hinted = funded.find((c) => c.rail === capHint);
+        const hinted = funded.find((c) => c.rail === capHint || (capHint === "usdc" && c.rail === "solana-usdc"));
         if (hinted) return hinted;
       }
       return funded[0];
@@ -414,6 +423,7 @@ export function createPrfHttp402Payer({
   merchantFetch = defaultPinnedMerchantFetch,
   ensureRailFunded = null,
   getBtcUsdRate = defaultGetBtcUsdRate,
+  solanaRpcUrl,
 } = {}) {
   async function payHttpResource({
     walletRecord,
@@ -443,13 +453,15 @@ export function createPrfHttp402Payer({
     const bodyText = isUtf8(first.bytes) ? first.bytes.toString("utf8") : "";
     let prefBalances = null;
     if (!prefer && safeRuntime && arkadeRuntime) {
-      const [uRes, aRes] = await Promise.allSettled([
+      const [uRes, aRes, sRes] = await Promise.allSettled([
         safeRuntime.readUsdcBalanceUnits(walletRecord.safeAddress),
         arkadeRuntime.readBalance(walletRecord),
+        solanaSignerFromAgentKey(secrets.agentEthPrivHex).then((signer) => readSolanaUsdcBalance({ owner: signer.address, ...(solanaRpcUrl ? { rpcUrl: solanaRpcUrl } : {}) })),
       ]);
       prefBalances = {
         usdcUnits: uRes.status === "fulfilled" ? uRes.value : 0n,
         sats: aRes.status === "fulfilled" ? aRes.value.sats : 0n,
+        solanaUsdcUnits: sRes.status === "fulfilled" ? sRes.value : 0n,
       };
     }
 
@@ -474,7 +486,7 @@ export function createPrfHttp402Payer({
 
     const needsCrossCap =
       (selected.rail === "lightning" && maxAmountUnits !== undefined && maxAmountUnits !== null) ||
-      (selected.rail === "usdc" && maxSats !== undefined && maxSats !== null);
+      ((selected.rail === "usdc" || selected.rail === "solana-usdc") && maxSats !== undefined && maxSats !== null);
     const btcUsd = needsCrossCap ? await getBtcUsdRate().catch(() => null) : null;
 
     function isLightningOverCap(amountSats) {
@@ -533,6 +545,14 @@ export function createPrfHttp402Payer({
           available_sats: bal.sats.toString(),
           payable: (nativePayable || crossRail) && !overCap,
         };
+      }
+      if (selected.kind === "x402-solana") {
+        const solanaBal = prefBalances?.solanaUsdcUnits ?? await solanaSignerFromAgentKey(secrets.agentEthPrivHex)
+          .then((signer) => readSolanaUsdcBalance({ owner: signer.address, ...(solanaRpcUrl ? { rpcUrl: solanaRpcUrl } : {}) }));
+        const overCap = isUsdcOverCap(selected.amountUnits);
+        return { status: "done", dry_run: true, protocol: "x402", rail: "solana-usdc",
+          amount_units: selected.amountUnits, over_cap: overCap, quote: quoteSolanaOffer(selected.offer),
+          available_units: solanaBal.toString(), payable: solanaBal >= BigInt(selected.amountUnits) && !overCap };
       }
       const usdcBal =
         prefBalances?.usdcUnits ??
@@ -640,6 +660,28 @@ export function createPrfHttp402Payer({
         ark_txid: paidLn.arkTxid,
         resource: formatResourceBody(second),
       };
+    }
+
+    if (selected.kind === "x402-solana") {
+      if (isUsdcOverCap(selected.amountUnits)) {
+        const err = new Error("invoice_exceeds_max_amount");
+        err.code = "over_max_amount";
+        err.invoiceUnits = selected.amountUnits;
+        if (maxAmountUnits !== undefined && maxAmountUnits !== null) err.maxUnits = String(maxAmountUnits);
+        if (maxSats !== undefined && maxSats !== null) err.maxSats = Number(maxSats);
+        throw err;
+      }
+      const signed = await payWithSolana({ offer: selected.offer, required: selected.required, agentEthPrivateKeyHex: secrets.agentEthPrivHex, ...(solanaRpcUrl ? { rpcUrl: solanaRpcUrl } : {}) });
+      const second = await merchantFetch(url, { headers: signed.headers, shape });
+      let receipt = null;
+      const receiptHeader = getHeader(second.headers, "payment-response") || getHeader(second.headers, "x-payment-response");
+      if (typeof receiptHeader === "string") {
+        try { receipt = decodePaymentResponseHeader(receiptHeader); } catch { receipt = null; }
+      }
+      return { status: second.status >= 200 && second.status < 300 ? "done" : "failed", paid: true,
+        protocol: "x402", rail: "solana-usdc", http_status: second.status, amount_units: selected.offer.amount,
+        asset: selected.offer.asset, solana_address: signed.payerAddress, tx_hash: receipt?.transaction || null,
+        resource: formatResourceBody(second) };
     }
 
     // EVM Base USDC rail (`x402` or `mpp-evm`)
