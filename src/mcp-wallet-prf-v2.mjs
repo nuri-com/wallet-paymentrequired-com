@@ -120,6 +120,8 @@ export function createPrfWalletCoordinator({
   fetchImpl = fetch,
   bridgeTimeoutMs = 45_000,
   bridgePollIntervalMs = 2_000,
+  autoClaimIntervalMs = 2_500,
+  autoClaimTtlMs = 10 * 60_000,
 } = {}) {
   const configured = isPrfCustodyConfigured(env) || Boolean(cosignerClient);
   let store = null;
@@ -129,7 +131,9 @@ export function createPrfWalletCoordinator({
   let arkade = arkadeRuntime || null;
   let swapkit = swapkitClient || null;
   let payer = http402Payer || null;
+  let closed = false;
   const createUrlByRequest = new Map();
+  const activeReceiveWatchers = new Map();
 
   function ensureStore() {
     if (!store) {
@@ -332,32 +336,47 @@ export function createPrfWalletCoordinator({
     const prevUsdc = await ensureSafe().readUsdcBalanceUnits(walletRecord.safeAddress).catch(() => 0n);
     const neededUsdcNum = Number(unitsToDecimal(String(neededUsdcUnits), 6));
     const sk = ensureSwapkit();
-    const route = await sk.routeSwap({
-      from: "BTC_LN",
-      to: "USDC_BASE",
-      amount: neededUsdcNum,
-      side: "settle",
-      liveOnly: true,
-    });
-
-    let bridgeUsdc = neededUsdcNum;
-    if (!route?.bestExecutable) {
-      const minInfo = extractProviderMinFromRoute(route, "BTC_LN");
-      const rate = route?.unavailable?.find?.((u) => u?.limits?.rate)?.limits?.rate;
-      const estimatedMinUsdc =
-        minInfo && rate ? Math.ceil((minInfo.min / Number(rate)) * 1.15 * 100) / 100 : 5.5;
-      bridgeUsdc = Math.max(neededUsdcNum, Math.max(5.5, estimatedMinUsdc));
+    // Fast path: skip the extra swap_route MCP round-trip by requesting >= 5.5 USDC directly
+    // (above BitcoinVN's live ~$5 min); fall back to routeSwap only if createSwap rejects it.
+    let bridgeUsdc = Math.max(neededUsdcNum, 5.5);
+    let swap;
+    try {
+      swap = await sk.createSwap({
+        from: "BTC_LN",
+        to: "USDC_BASE",
+        amount: bridgeUsdc,
+        side: "settle",
+        settleTarget: walletRecord.safeAddress,
+        walletCapabilities: ["pay_lightning_invoice"],
+        customOrderId: `${opId}:a2u`,
+      });
+    } catch {
+      const route = await sk.routeSwap({
+        from: "BTC_LN",
+        to: "USDC_BASE",
+        amount: neededUsdcNum,
+        side: "settle",
+        liveOnly: true,
+      });
+      if (!route?.bestExecutable) {
+        const minInfo = extractProviderMinFromRoute(route, "BTC_LN");
+        const rate = route?.unavailable?.find?.((u) => u?.limits?.rate)?.limits?.rate;
+        const estimatedMinUsdc =
+          minInfo && rate ? Math.ceil((minInfo.min / Number(rate)) * 1.15 * 100) / 100 : 5.5;
+        bridgeUsdc = Math.max(neededUsdcNum, Math.max(5.5, estimatedMinUsdc));
+      } else {
+        bridgeUsdc = neededUsdcNum;
+      }
+      swap = await sk.createSwap({
+        from: "BTC_LN",
+        to: "USDC_BASE",
+        amount: bridgeUsdc,
+        side: "settle",
+        settleTarget: walletRecord.safeAddress,
+        walletCapabilities: ["pay_lightning_invoice"],
+        customOrderId: `${opId}:a2u`,
+      });
     }
-
-    const swap = await sk.createSwap({
-      from: "BTC_LN",
-      to: "USDC_BASE",
-      amount: bridgeUsdc,
-      side: "settle",
-      settleTarget: walletRecord.safeAddress,
-      walletCapabilities: ["pay_lightning_invoice"],
-      customOrderId: `${opId}:a2u`,
-    });
     if (!swap.payInvoice) {
       throw new Error("cross_rail_swap_missing_lightning_invoice");
     }
@@ -424,6 +443,86 @@ export function createPrfWalletCoordinator({
     return payer;
   }
 
+  function stopReceiveWatcher(rfqId) {
+    const entry = activeReceiveWatchers.get(rfqId);
+    if (!entry) return;
+    entry.stopped = true;
+    if (entry.timer) clearTimeout(entry.timer);
+    activeReceiveWatchers.delete(rfqId);
+  }
+
+  async function claimAndRecordReceive(walletRecord, agentBtcPrivHex, rec) {
+    if (closed || !store) return false;
+    const db = ensureStore();
+    const res = await ensureArkade().claimLightningReceive({
+      walletRecord,
+      agentBtcPrivHex,
+      receiveRecord: rec,
+    });
+    if (res.status !== "claimed") return false;
+    db.markLightningReceiveClaimed(rec.rfqId, {
+      claimTxid: res.claimTxid || null,
+      claimedSats: res.claimedSats ?? rec.expectedAmountSats,
+    });
+    if (!res.alreadyClaimed) {
+      db.recordOperation({
+        walletId: walletRecord.walletId,
+        requestId: rec.requestId || `ln-recv-${rec.rfqId.slice(0, 16)}`,
+        action: "receive",
+        rail: "lightning",
+        status: "done",
+        amountDisplay: `${res.claimedSats ?? rec.expectedAmountSats} sats`,
+        summary: {
+          kind: "receive",
+          rail: "lightning",
+          amount_sats: res.claimedSats ?? rec.expectedAmountSats,
+          tx: res.claimTxid || null,
+        },
+        result: res,
+      });
+    }
+    stopReceiveWatcher(rec.rfqId);
+    return true;
+  }
+
+  // Lightweight in-memory background sweeper for newly minted Lightning receives:
+  // polls pushClaim every ~2.5s until claimed/expired so incoming HTLCs settle automatically
+  // even if the receiving agent does not poll wallet balance. Key is dropped once done.
+  function scheduleReceiveAutoClaim(walletRecord, agentBtcPrivHex, rec) {
+    if (closed || !rec?.rfqId || !agentBtcPrivHex || autoClaimIntervalMs <= 0) return;
+    if (activeReceiveWatchers.has(rec.rfqId)) return;
+    const expiryMs = rec.expiresAt ? Number(rec.expiresAt) * 1000 + 30_000 : Date.now() + autoClaimTtlMs;
+    const deadline = Math.min(Date.now() + autoClaimTtlMs, expiryMs);
+    const entry = { stopped: false, timer: null };
+    activeReceiveWatchers.set(rec.rfqId, entry);
+
+    const tick = async () => {
+      if (closed || entry.stopped || !store) {
+        stopReceiveWatcher(rec.rfqId);
+        return;
+      }
+      if (Date.now() > deadline) {
+        stopReceiveWatcher(rec.rfqId);
+        return;
+      }
+      try {
+        const claimed = await claimAndRecordReceive(walletRecord, agentBtcPrivHex, rec);
+        if (claimed) return;
+      } catch {
+        // Non-fatal: invoice still unpaid or transient indexer error.
+      }
+      if (!closed && !entry.stopped && Date.now() <= deadline) {
+        entry.timer = setTimeout(tick, autoClaimIntervalMs);
+        entry.timer.unref?.();
+      } else {
+        stopReceiveWatcher(rec.rfqId);
+      }
+    };
+
+    entry.timer = setTimeout(tick, autoClaimIntervalMs);
+    entry.timer.unref?.();
+  }
+
   async function sweepPendingReceives(walletRecord, agentBtcPrivHex) {
     const db = ensureStore();
     const pending = db.listPendingLightningReceives(walletRecord.walletId);
@@ -431,33 +530,7 @@ export function createPrfWalletCoordinator({
     const claimed = [];
     for (const rec of pending) {
       try {
-        const res = await ensureArkade().claimLightningReceive({
-          walletRecord,
-          agentBtcPrivHex,
-          receiveRecord: rec,
-        });
-        if (res.status === "claimed") {
-          db.markLightningReceiveClaimed(rec.rfqId, {
-            claimTxid: res.claimTxid || null,
-            claimedSats: res.claimedSats ?? rec.expectedAmountSats,
-          });
-          if (!res.alreadyClaimed) {
-            db.recordOperation({
-              walletId: walletRecord.walletId,
-              requestId: rec.requestId || `ln-recv-${rec.rfqId.slice(0, 16)}`,
-              action: "receive",
-              rail: "lightning",
-              status: "done",
-              amountDisplay: `${res.claimedSats ?? rec.expectedAmountSats} sats`,
-              summary: {
-                kind: "receive",
-                rail: "lightning",
-                amount_sats: res.claimedSats ?? rec.expectedAmountSats,
-                tx: res.claimTxid || null,
-              },
-              result: res,
-            });
-          }
+        if (await claimAndRecordReceive(walletRecord, agentBtcPrivHex, rec)) {
           claimed.push(rec.rfqId);
         }
       } catch {
@@ -465,6 +538,124 @@ export function createPrfWalletCoordinator({
       }
     }
     return claimed;
+  }
+
+  async function refreshPendingSendOp(walletId, reqId) {
+    const db = ensureStore();
+    const op = db.getOperation(walletId, reqId);
+    if (!op || op.status !== "pending" || op.action !== "pay") return op;
+    const s = op.summary || {};
+
+    if (s.swap_pk_script_hex && s.payment_hash && typeof ensureArkade().checkLightningSendFate === "function") {
+      try {
+        const fate = await ensureArkade().checkLightningSendFate({
+          swapPkScriptHex: s.swap_pk_script_hex,
+          paymentHash: s.payment_hash,
+        });
+        if (fate?.fate === "claimed" && fate.preimageHex) {
+          const updatedResult = {
+            ...(op.result || {}),
+            ok: true,
+            status: "done",
+            preimage: fate.preimageHex,
+          };
+          return db.recordOperation({
+            walletId,
+            requestId: reqId,
+            action: op.action,
+            rail: op.rail,
+            status: "done",
+            amountDisplay: op.amountDisplay,
+            summary: { ...s, preimage: fate.preimageHex },
+            result: updatedResult,
+          });
+        }
+        if (fate?.fate === "refunded") {
+          const updatedResult = {
+            ...(op.result || {}),
+            ok: false,
+            status: "failed",
+            error: "Payment failed (lightning_send_refunded).",
+          };
+          return db.recordOperation({
+            walletId,
+            requestId: reqId,
+            action: op.action,
+            rail: op.rail,
+            status: "failed",
+            amountDisplay: op.amountDisplay,
+            summary: { ...s, reason: "lightning_send_refunded" },
+            result: updatedResult,
+          });
+        }
+      } catch {
+        // Non-fatal: indexer check can retry later.
+      }
+    }
+
+    if (s.swap_provider && s.swap_id && typeof ensureSwapkit().getSwapStatus === "function") {
+      try {
+        const st = await ensureSwapkit().getSwapStatus({
+          provider: s.swap_provider,
+          id: s.swap_id,
+        });
+        const statusUpper = String(st?.status || "").toUpperCase();
+        if (["COMPLETED", "SETTLED", "SUCCESS", "FINISHED", "DONE"].includes(statusUpper)) {
+          const settleTx = st?.settleTxid || st?.txid || s.tx || null;
+          const updatedResult = {
+            ...(op.result || {}),
+            ok: true,
+            status: "done",
+            ...(settleTx && op.result?.receipt
+              ? { receipt: { ...op.result.receipt, tx: settleTx } }
+              : {}),
+          };
+          return db.recordOperation({
+            walletId,
+            requestId: reqId,
+            action: op.action,
+            rail: op.rail,
+            status: "done",
+            amountDisplay: op.amountDisplay,
+            summary: { ...s, tx: settleTx },
+            result: updatedResult,
+          });
+        }
+        if (["FAILED", "EXPIRED", "REFUNDED", "CANCELLED"].includes(statusUpper)) {
+          const updatedResult = {
+            ...(op.result || {}),
+            ok: false,
+            status: "failed",
+            error: `Swap ${statusUpper.toLowerCase()} (${s.swap_id}).`,
+          };
+          return db.recordOperation({
+            walletId,
+            requestId: reqId,
+            action: op.action,
+            rail: op.rail,
+            status: "failed",
+            amountDisplay: op.amountDisplay,
+            summary: { ...s, reason: `swap_${statusUpper.toLowerCase()}` },
+            result: updatedResult,
+          });
+        }
+      } catch {
+        // Non-fatal: SwapKit status check can retry later.
+      }
+    }
+
+    return op;
+  }
+
+  async function refreshPendingSends(walletId) {
+    const db = ensureStore();
+    const pending = db
+      .listOperations(walletId, { limit: 25 })
+      .filter((op) => op.status === "pending" && op.action === "pay")
+      .slice(0, 5);
+    for (const op of pending) {
+      await refreshPendingSendOp(walletId, op.request_id);
+    }
   }
 
   async function readDualBalances(walletRecord, secrets = null) {
@@ -685,6 +876,7 @@ export function createPrfWalletCoordinator({
   async function handleBalance(args) {
     if (isPrfWalletKey(args?.wallet_key) && !args?.new) {
       const { wallet, secrets } = ensureStore().unlockWalletSecrets(args.wallet_key);
+      await refreshPendingSends(wallet.walletId);
       const balances = await readDualBalances(wallet, secrets);
       return {
         ok: true,
@@ -758,6 +950,7 @@ export function createPrfWalletCoordinator({
               next: "Lightning payment received and claimed into 2-of-2 Arkade custody.",
             };
           }
+          scheduleReceiveAutoClaim(wallet, secrets.agentBtcPrivHex, existing);
           return {
             ok: true,
             status: "pending",
@@ -769,7 +962,7 @@ export function createPrfWalletCoordinator({
             expected_sats: existing.expectedAmountSats,
             fee_sats: existing.feeSats,
             expires_at: existing.expiresAt,
-            next: "Pay the BOLT11 invoice, then call wallet balance or repeat wallet receive with the same request_id.",
+            next: "Pay the BOLT11 invoice; incoming sats are auto-claimed automatically once paid (check wallet balance).",
           };
         }
       }
@@ -831,6 +1024,13 @@ export function createPrfWalletCoordinator({
           tx: null,
         },
         result: out,
+      });
+      scheduleReceiveAutoClaim(wallet, secrets.agentBtcPrivHex, {
+        rfqId: created.rfqId,
+        requestId: recvReqId,
+        expectedAmountSats: created.expectedAmountSats,
+        expiresAt: created.expiresAt,
+        quoteJson: created.quoteJson,
       });
       return out;
     }
@@ -1139,7 +1339,10 @@ export function createPrfWalletCoordinator({
         ? args.request_id.trim()
         : randomUUID();
 
-    const prior = db.getOperation(wallet.walletId, reqId);
+    let prior = db.getOperation(wallet.walletId, reqId);
+    if (prior && prior.status === "pending" && !args.dry_run) {
+      prior = (await refreshPendingSendOp(wallet.walletId, reqId)) || prior;
+    }
     if (prior && (prior.status === "done" || prior.status === "pending") && !args.dry_run) {
       return prior.result;
     }
@@ -1307,7 +1510,13 @@ export function createPrfWalletCoordinator({
               rail: "lightning",
               status: res.status,
               amountDisplay: `${res.amountSats} sats`,
-              summary: { kind: "pay", to: res.paymentHash, tx: res.txHash },
+              summary: {
+                kind: "pay",
+                to: res.paymentHash,
+                tx: res.txHash,
+                ...(res.provider ? { swap_provider: res.provider } : {}),
+                ...(res.swapId ? { swap_id: res.swapId } : {}),
+              },
               result: out,
             });
           }
@@ -1338,7 +1547,13 @@ export function createPrfWalletCoordinator({
             rail: "lightning",
             status: paid.status,
             amountDisplay: `${paid.amountSats} sats`,
-            summary: { kind: "pay", to: paid.paymentHash, tx: paid.arkTxid },
+            summary: {
+              kind: "pay",
+              to: paid.paymentHash,
+              tx: paid.arkTxid,
+              ...(paid.paymentHash ? { payment_hash: paid.paymentHash } : {}),
+              ...(paid.swapPkScriptHex ? { swap_pk_script_hex: paid.swapPkScriptHex } : {}),
+            },
             result: out,
           });
         }
@@ -1393,7 +1608,13 @@ export function createPrfWalletCoordinator({
               rail: "lightning",
               status: res.status,
               amountDisplay: `${res.amountSats} sats`,
-              summary: { kind: "pay", to: target, tx: res.txHash },
+              summary: {
+                kind: "pay",
+                to: target,
+                tx: res.txHash,
+                ...(res.provider ? { swap_provider: res.provider } : {}),
+                ...(res.swapId ? { swap_id: res.swapId } : {}),
+              },
               result: out,
             });
           }
@@ -1425,7 +1646,13 @@ export function createPrfWalletCoordinator({
             rail: "lightning",
             status: paid.status,
             amountDisplay: `${paid.amountSats} sats`,
-            summary: { kind: "pay", to: target, tx: paid.arkTxid },
+            summary: {
+              kind: "pay",
+              to: target,
+              tx: paid.arkTxid,
+              ...(paid.paymentHash ? { payment_hash: paid.paymentHash } : {}),
+              ...(paid.swapPkScriptHex ? { swap_pk_script_hex: paid.swapPkScriptHex } : {}),
+            },
             result: out,
           });
         }
@@ -1741,6 +1968,7 @@ export function createPrfWalletCoordinator({
     const db = ensureStore();
     const { wallet, secrets } = db.unlockWalletSecrets(args.wallet_key);
     await sweepPendingReceives(wallet, secrets.agentBtcPrivHex);
+    await refreshPendingSends(wallet.walletId);
     const items = db.listOperations(wallet.walletId, { limit: args.limit || 25 });
     return {
       ok: true,
@@ -1800,6 +2028,10 @@ export function createPrfWalletCoordinator({
   }
 
   function close() {
+    closed = true;
+    for (const rfqId of [...activeReceiveWatchers.keys()]) {
+      stopReceiveWatcher(rfqId);
+    }
     store?.close?.();
     store = null;
   }

@@ -950,6 +950,7 @@ export function createAgentArkadeRuntime({
           totalSats: fundAmountSats,
           arkTxid: funded.arkTxid,
           lockupAddress: lockup.address,
+          swapPkScriptHex: bytesToHex(lockup.swapPkScript),
         };
       }
       if (fate.fate === "refunded") {
@@ -968,6 +969,19 @@ export function createAgentArkadeRuntime({
       totalSats: fundAmountSats,
       arkTxid: funded.arkTxid,
       lockupAddress: lockup.address,
+      swapPkScriptHex: bytesToHex(lockup.swapPkScript),
+    };
+  }
+
+  async function checkLightningSendFate({ swapPkScriptHex, paymentHash }) {
+    if (!swapPkScriptHex || !paymentHash) return { fate: "pending", preimageHex: null };
+    const fate = await readLockupFate(indexer, {
+      swapPkScript: hexToBytes(swapPkScriptHex),
+      paymentHash,
+    });
+    return {
+      fate: fate.preimage ? "claimed" : fate.fate || "pending",
+      preimageHex: fate.preimage ? bytesToHex(fate.preimage) : null,
     };
   }
 
@@ -983,6 +997,7 @@ export function createAgentArkadeRuntime({
     createLightningReceive,
     claimLightningReceive,
     payBolt11Invoice,
+    checkLightningSendFate,
     decodeBolt11,
     resolveLightningAddressInvoice: (opts) =>
       resolveLightningAddressInvoice({ fetchImpl, ...opts }),

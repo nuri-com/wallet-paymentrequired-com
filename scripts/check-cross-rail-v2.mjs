@@ -298,7 +298,13 @@ try {
         feeSats: 30,
         totalSats: total,
         arkTxid,
+        swapPkScriptHex: "5120" + "22".repeat(32),
       };
+    },
+    async checkLightningSendFate({ paymentHash }) {
+      const settledPre = settledPendingSendPreimages.get(paymentHash);
+      if (settledPre) return { fate: "claimed", preimageHex: settledPre };
+      return { fate: "pending", preimageHex: null };
     },
   };
 
@@ -451,6 +457,7 @@ try {
   };
 
   const pendingBolt11Hashes = new Set();
+  const settledPendingSendPreimages = new Map();
   let walletSafeAddr = null;
   const walletTool = createMcpWalletTool({
     accountFlow: { authorized: async () => null },
@@ -467,6 +474,8 @@ try {
       getBtcUsdRate: async () => BTC_USD,
       bridgeTimeoutMs: 5_000,
       bridgePollIntervalMs: 50,
+      autoClaimIntervalMs: 25,
+      autoClaimTtlMs: 5_000,
     },
   });
 
@@ -672,8 +681,43 @@ try {
   assert.equal(pendingHistItem.status, "pending");
   assert.equal(pendingHistItem.rail, "lightning");
 
+  // J. Once the pending Lightning send settles on-chain/Arkade, replay & history auto-upgrade pending -> done with preimage!
+  settledPendingSendPreimages.set(pendingInv.paymentHash, pendingInv.preimageHex);
+  const upgradedReplay = await walletTool.call({
+    action: "pay",
+    wallet_key: walletKey,
+    to: pendingInv.invoice,
+    max_sats: 1000,
+    request_id: "pending-ln-replay",
+  });
+  assert.equal(upgradedReplay.ok, true);
+  assert.equal(upgradedReplay.status, "done");
+  assert.equal(upgradedReplay.preimage, pendingInv.preimageHex);
+  assert.equal(transfers.length, txBeforePending + 1, "upgraded replay must NOT re-submit payment");
+
+  // K. Background pushClaim auto-claimer settles inbound Lightning receives without calling wallet balance!
+  const satsBeforeAutoClaim = arkSats;
+  const autoRecv = await walletTool.call({
+    action: "receive",
+    wallet_key: walletKey,
+    rail: "lightning",
+    amount_sats: 1200,
+    request_id: "auto-claim-ln-1",
+  });
+  assert.equal(autoRecv.ok, true);
+  // Simulate payer funding the VHTLC without receiver ever calling wallet balance:
+  const pendingRecObj = pendingSwapReceives.get(autoRecv.invoice);
+  assert.ok(pendingRecObj, "receive record must exist");
+  pendingRecObj.funded = true;
+  // Wait for background autoClaimIntervalMs (25ms) watcher to claim it automatically:
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(arkSats, satsBeforeAutoClaim + 1200n, "background pushClaim watcher must auto-claim sats without balance call");
+  const histAfterAuto = await walletTool.call({ action: "history", wallet_key: walletKey });
+  const claimedHist = histAfterAuto.history.find((h) => h.request_id === "auto-claim-ln-1");
+  assert.equal(claimedHist?.status, "done", "auto-claimed receive must be done in history");
+
   walletTool.close();
-  console.log("cross-rail v2 check ok: chained create_url, universal to, dual-rail auto-pick + capHint, cross-rail max_amount/max_sats guards, pending idempotency replay, USDC->BOLT11, USDC->L402 bridge, Arkade->x402 bridge, bc1/BIP21 from BTC & USDC, and Monero->SwapKit redirect verified");
+  console.log("cross-rail v2 check ok: background pushClaim auto-claim, pending send fate refresh, chained create_url, universal to, dual-rail auto-pick + capHint, cross-rail max_amount/max_sats guards, pending idempotency replay, USDC->BOLT11, USDC->L402 bridge, Arkade->x402 bridge, bc1/BIP21 from BTC & USDC, and Monero->SwapKit redirect verified");
 } finally {
   Object.keys(process.env).forEach((k) => {
     if (!(k in savedEnv)) delete process.env[k];

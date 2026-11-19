@@ -23,7 +23,7 @@ const EXAMPLES = [
   [["wallet"], "setup / balance → wallet {action: \"balance\"} (no wallet_key starts create/connect; with wallet_key shows USDC + sats)"],
   [["wallet"], "receive → wallet {action: \"receive\", wallet_key, rail: \"lightning\"|\"usdc\"|\"arkade\", amount_sats?}"],
   [["wallet"], "pay 402 API → wallet {action: \"pay\", wallet_key, to: \"https://...\", max_amount?/max_sats?, dry_run?, request_id}. Over-cap: retry with a NEW request_id and a higher max_amount."],
-  [["wallet"], "pay invoice / address → wallet {action: \"pay\", wallet_key, to: \"lnbc...\"|\"user@domain\"|\"bc1...\"|\"ark1...\"|\"0x...\", amount?/amount_sats?, request_id} (amount = USDC for 0x...; amount_sats = sats for BTC/LN)."],
+  [["wallet"], "pay invoice / address → wallet {action: \"pay\", wallet_key, to: \"lnbc...\"|\"user@domain\"|\"bc1...\"|\"ark1...\"|\"0x...\", amount?/amount_sats?, request_id} (0x... = USDC in amount; bc1... = BTC directly in amount e.g. \"0.00025\" or amount_sats; user@domain/ark1... = amount_sats)."],
 ];
 
 const COMPANION_DIRECTORY = [
@@ -50,7 +50,7 @@ RULES
 EXAMPLES
 ${EXAMPLES.filter(([need]) => need.every(name => here.has(name))).map(([, text]) => `- ${text}`).join("\n")}
 
-COMPANION TOOLS (separate MCP servers — share their URL when asked for other assets/fiat; do not invent fields on wallet)
+COMPANION TOOLS (separate MCP servers — NEVER pass Monero/XMR or other unsupported assets to wallet; answer directly with the companion URL)
 ${COMPANION_DIRECTORY.join("\n")}
 
 Reply short, in the person's language.`;
