@@ -27,9 +27,9 @@ const EXAMPLES = [
 ];
 
 const COMPANION_DIRECTORY = [
-  "- SwapKit (https://swapkit.nuri.com/mcp): swap, deposit, or pay ANY other asset (Monero XMR, ETH, SOL, EURC, etc.) via BitcoinVN/Satora.",
-  "- Banking (https://banking.paymentrequired.com/mcp): person's euro IBAN, debit card, SEPA, and spending limits (account, bank).",
-  "- Browser / checkout: for web stores (e.g. xmrstreet.store, nadanada.me), use a browser tool to get the Lightning invoice or bc1.../bitcoin: address, then pay it with wallet pay.",
+  "- SwapKit (https://swapkit.nuri.com/mcp): swap or pay Monero XMR, ETH, SOL, EURC, etc.",
+  "- Banking (https://banking.paymentrequired.com/mcp): euro IBAN, debit card, SEPA, limits (account, bank).",
+  "- Browser / checkout: for web stores, use a browser tool to get the BOLT11 or bc1.../bitcoin: address, then pay with wallet pay.",
 ];
 
 export function instructions(toolNames = ALWAYS_TOOLS) {
@@ -50,7 +50,7 @@ RULES
 EXAMPLES
 ${EXAMPLES.filter(([need]) => need.every(name => here.has(name))).map(([, text]) => `- ${text}`).join("\n")}
 
-COMPANION TOOLS (separate MCP servers — NEVER pass Monero/XMR or other unsupported assets to wallet; answer directly with the companion URL)
+COMPANION TOOLS (separate MCPs — NEVER pass companion MCP URLs like swapkit.nuri.com/mcp or XMR addresses into wallet pay; reply with the companion URL)
 ${COMPANION_DIRECTORY.join("\n")}
 
 Reply short, in the person's language.`;
