@@ -17,7 +17,7 @@ import { createConnectionEffects } from "./mcp-connection-effects.mjs";
 import { createBrowserSessionStore } from "./browser-session-store.mjs";
 import { createSignerClient } from "./signer-client.mjs";
 import { readServiceMode } from "./service-mode.mjs";
-import { resolveWalletOrigin, serviceIndexHtml, walletLlmsTxt, walletSkillMd, WALLET_HOSTS } from "./service-index.mjs";
+import { resolveWalletOrigin, serviceIndexHtml, walletLlmsTxt, walletOpenApiJson, walletSkillMd, WALLET_HOSTS } from "./service-index.mjs";
 import { createServiceRpcServer, createRemoteTool } from "./service-rpc.mjs";
 import { createIdentityHandoff, qualifiedIdentity } from "./identity-handoff.mjs";
 import { readRootSignerConfig, createRootSignerHook } from "./signer-broker-hook.mjs";
@@ -161,6 +161,14 @@ const INITIALIZE_INSTRUCTIONS = instructions(mcpTools.map((tool) => tool.name));
 const HOME_BY_ORIGIN = new Map(WALLET_HOSTS.map((h) => [`https://${h}`, serviceIndexHtml("wallet", { origin: `https://${h}` })]));
 const LLMS_BY_ORIGIN = new Map(WALLET_HOSTS.map((h) => [`https://${h}`, walletLlmsTxt(`https://${h}`)]));
 const SKILL_BY_ORIGIN = new Map(WALLET_HOSTS.map((h) => [`https://${h}`, walletSkillMd(`https://${h}`)]));
+const OPENAPI_BY_ORIGIN = new Map(WALLET_HOSTS.map((h) => [`https://${h}`, JSON.stringify(walletOpenApiJson(`https://${h}`), null, 2)]));
+const REST_ACTION_ROUTES = new Map([
+  ["/v1/wallet", null],
+  ["/v1/balance", "balance"],
+  ["/v1/receive", "receive"],
+  ["/v1/pay", "pay"],
+  ["/v1/history", "history"],
+]);
 const pendingApprovalLimiter = createKycCapabilityLimiter();
 
 const server = http.createServer(async (req, res) => {
@@ -192,6 +200,13 @@ const server = http.createServer(async (req, res) => {
     if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/skill.md") {
       const origin = resolveWalletOrigin(req);
       return writeText(req, res, 200, SKILL_BY_ORIGIN.get(origin) || walletSkillMd(origin), "text/markdown; charset=utf-8");
+    }
+    if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/openapi.json") {
+      const origin = resolveWalletOrigin(req);
+      return writeText(req, res, 200, OPENAPI_BY_ORIGIN.get(origin) || JSON.stringify(walletOpenApiJson(origin), null, 2), "application/json; charset=utf-8");
+    }
+    if (REST_ACTION_ROUTES.has(url.pathname)) {
+      return await handleRestWallet(req, res, REST_ACTION_ROUTES.get(url.pathname));
     }
     if ((url.pathname === "/bridge/privy" || url.pathname === "/bridge/privy/") && req.method === "GET") {
       return writePrivyHtml(req, res, 200, await browserBridge.privyBridgeHtml());
@@ -273,6 +288,42 @@ for (const partner of ["nuri", "wirex"]) {
 server.listen(PORT, HOST, () => {
   console.log(`paymentrequired wallet listening on http://${HOST}:${PORT} | public base: ${browserBridge.publicBase} | service: ${SERVICE.mode}`);
 });
+
+async function handleRestWallet(req, res, fixedAction) {
+  const reqOrigin = resolveWalletOrigin(req);
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST, OPTIONS");
+    return writeJson(req, res, 405, { ok: false, error: "method_not_allowed", hint: `POST JSON to this URL. Docs: ${reqOrigin}/llms.txt | OpenAPI: ${reqOrigin}/openapi.json` });
+  }
+  const body = await readJson(req);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return writeJson(req, res, 400, { ok: false, error: "invalid_request", message: "Request body must be a JSON object." });
+  }
+  const args = { ...body };
+  if (fixedAction) args.action = fixedAction;
+  else if (!args.action) args.action = "balance";
+  if (!args.wallet_key && typeof req.headers.authorization === "string") {
+    const m = /^Bearer\s+(npw1_\S+)$/i.exec(req.headers.authorization.trim());
+    if (m) args.wallet_key = m[1];
+    else if (!args.session) args.session = req.headers.authorization;
+  }
+  if (res.destroyed) return;
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  res.once("close", cancel);
+  try {
+    const result = await mcpConnection.call("wallet", args, { signal: controller.signal });
+    if (!res.destroyed) {
+      const payload = result.structuredContent ?? { ok: !result.isError };
+      return writeJson(req, res, result.isError ? 400 : 200, payload);
+    }
+  } catch (error) {
+    const data = { ok: false, status: "failed", error: String(error.message || error).replace(/^wirex_/, "provider_") };
+    if (error?.next_action && typeof error.next_action === "object") data.next_action = error.next_action;
+    if (Array.isArray(error?.allowed_merchants)) data.allowed_merchants = error.allowed_merchants;
+    if (!res.destroyed) return writeJson(req, res, 400, data);
+  } finally { res.off("close", cancel); }
+}
 
 async function handleMcp(req, res) {
   const reqOrigin = resolveWalletOrigin(req);

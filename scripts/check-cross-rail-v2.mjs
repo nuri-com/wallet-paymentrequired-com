@@ -775,7 +775,7 @@ try {
   });
   let childStderr = "";
   child.stderr.on("data", (chunk) => { childStderr += chunk.toString(); });
-  const httpReq = (path, { method = "GET", headers = {} } = {}) =>
+  const httpReq = (path, { method = "GET", headers = {}, body } = {}) =>
     new Promise((resolve, reject) => {
       const req = http.request({ host: "127.0.0.1", port: freePort, path, method, headers }, (res) => {
         const chunks = [];
@@ -783,6 +783,7 @@ try {
         res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString("utf8") }));
       });
       req.on("error", reject);
+      if (body !== undefined) req.write(body);
       req.end();
     });
   try {
@@ -810,13 +811,17 @@ try {
       assert.equal(home.headers["cross-origin-opener-policy"], "same-origin-allow-popups");
       assert.ok(home.body.includes(`<title>${expectedHost} — Agent Wallet</title>`));
       assert.ok(home.body.includes(`${origin}/mcp`));
+      assert.ok(home.body.includes(`${origin}/v1/wallet`));
       assert.ok(home.body.includes(`${origin}/llms.txt`));
       assert.ok(home.body.includes(`${origin}/skill.md`));
+      assert.ok(home.body.includes(`${origin}/openapi.json`));
       assert.ok(home.body.includes("Create New Passkey Wallet"));
       assert.ok(home.body.includes("Connect Existing Nuri Passkey"));
       assert.ok(home.body.includes("Create Lightning Funding Invoice (sats)"));
+      assert.ok(home.body.includes("Test $0.01 Payment (Create Inbox)"));
       assert.ok(home.body.includes("Copy MCP URL"));
       assert.ok(home.body.includes("Copy Agent Prompt"));
+      assert.ok(home.body.includes("Copy cURL"));
       assert.ok(!home.body.includes("Privy v1"), "homepage must not show stale Privy v1 copy");
       assert.ok(!home.body.includes("/bridge/privy"), "homepage must not show legacy /bridge/privy copy");
       assert.ok(!home.body.includes("signer.paymentrequired.com"), "homepage must not show signer.paymentrequired.com clutter");
@@ -827,6 +832,8 @@ try {
       assert.match(llms.headers["content-type"], /text\/plain/);
       assert.ok(llms.body.includes(`# Agent Wallet (${expectedHost})`));
       assert.ok(llms.body.includes(`${origin}/mcp`));
+      assert.ok(llms.body.includes(`POST ${origin}/v1/wallet`));
+      assert.ok(llms.body.includes(`${origin}/openapi.json`));
       assert.ok(llms.body.includes(`NEVER send the person to \`${origin}/\``));
       assert.ok(llms.body.includes("Create / Connect Agent Wallet"));
       assert.ok(llms.body.includes("0.00025"));
@@ -840,20 +847,70 @@ try {
       assert.equal(skill.status, 200);
       assert.match(skill.headers["content-type"], /text\/markdown/);
       assert.ok(skill.body.includes(`mcp_endpoint: ${origin}/mcp`));
+      assert.ok(skill.body.includes(`rest_endpoint: ${origin}/v1/wallet`));
+      assert.ok(skill.body.includes(`openapi: ${origin}/openapi.json`));
       assert.ok(skill.body.includes(`# Agent Wallet (${expectedHost})`));
       assert.ok(!skill.body.includes("evil.example.com"));
+
+      const openapi = await httpReq("/openapi.json", { headers: hdrs });
+      assert.equal(openapi.status, 200);
+      assert.match(openapi.headers["content-type"], /application\/json/);
+      const spec = JSON.parse(openapi.body);
+      assert.equal(spec.openapi, "3.1.0");
+      assert.equal(spec.servers[0].url, origin);
+      assert.ok(spec.paths["/v1/wallet"]?.post);
+      assert.ok(spec.paths["/v1/balance"]?.post);
+      assert.ok(spec.paths["/v1/receive"]?.post);
+      assert.ok(spec.paths["/v1/pay"]?.post);
+      assert.ok(spec.paths["/v1/history"]?.post);
+      assert.ok(!openapi.body.includes("evil.example.com"));
 
       const mcpGet = await httpReq("/mcp", { headers: hdrs });
       assert.equal(mcpGet.status, 405);
       const mcpJson = JSON.parse(mcpGet.body);
       assert.equal(mcpJson.hint, `POST JSON-RPC to this URL. Start: ${origin}/llms.txt`);
+
+      const restGet = await httpReq("/v1/wallet", { headers: hdrs });
+      assert.equal(restGet.status, 405);
+      const restGetJson = JSON.parse(restGet.body);
+      assert.ok(restGetJson.hint.includes(`${origin}/openapi.json`));
     }
 
-    for (const p of ["/", "/llms.txt", "/skill.md"]) {
+    for (const p of ["/", "/llms.txt", "/skill.md", "/openapi.json"]) {
       const headRes = await httpReq(p, { method: "HEAD", headers: { Host: "wallet.nuri.com" } });
       assert.equal(headRes.status, 200);
       assert.equal(headRes.body, "");
     }
+
+    // Plain JSON REST /v1/* tests (zero MCP setup): anonymous balance returns connect_required
+    const restAnon = await httpReq("/v1/wallet", {
+      method: "POST",
+      headers: { Host: "wallet.paymentrequired.com", "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "balance" }),
+    });
+    assert.equal(restAnon.status, 200);
+    const restAnonJson = JSON.parse(restAnon.body);
+    assert.equal(restAnonJson.status, "connect_required");
+    assert.ok(restAnonJson.approval_url);
+    assert.ok(restAnonJson.create_url);
+
+    // /v1/balance injects action="balance" automatically and accepts Authorization: Bearer npw1_...
+    const restBalBadKey = await httpReq("/v1/balance", {
+      method: "POST",
+      headers: { Host: "wallet.paymentrequired.com", "Content-Type": "application/json", Authorization: "Bearer npw1_invalid_test_key" },
+      body: JSON.stringify({}),
+    });
+    assert.ok(restBalBadKey.status === 200 || restBalBadKey.status === 400);
+    const restBalJson = JSON.parse(restBalBadKey.body);
+    assert.ok(restBalJson.status === "connect_required" || restBalJson.ok === false, "invalid Bearer wallet_key must fail cleanly");
+
+    // Non-object body returns 400
+    const restArr = await httpReq("/v1/pay", {
+      method: "POST",
+      headers: { Host: "wallet.paymentrequired.com", "Content-Type": "application/json" },
+      body: JSON.stringify(["bad"]),
+    });
+    assert.equal(restArr.status, 400);
   } finally {
     if (child.exitCode === null && child.signalCode === null) {
       const exited = new Promise((resolve) => child.once("exit", resolve));
