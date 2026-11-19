@@ -79,7 +79,11 @@ import {
   parseL402Challenge,
   parseLightningMppChallenges,
 } from "../src/agent-lightning-pay.mjs";
-import { PRF_WALLET_KEY_RE, isPrfWalletKey } from "../src/prf-agent-wallet-store.mjs";
+import {
+  PRF_WALLET_KEY_RE,
+  isPrfWalletKey,
+  openPrfAgentWalletStore,
+} from "../src/prf-agent-wallet-store.mjs";
 import { WALLET_TOOL, createMcpWalletTool } from "../src/mcp-wallet-tool.mjs";
 
 const vector = JSON.parse(
@@ -1174,17 +1178,21 @@ try {
     },
   });
 
-  // Step A: Onboarding start (`wallet balance` with no wallet_key)
+  // Step A: Onboarding start (`wallet balance` with no wallet_key) — returns ONLY `approval_url`, NO `create_url`!
   const startRes = await walletTool.call({ action: "balance", request_id: "onboard-1" });
   assert.equal(startRes.ok, true);
   assert.equal(startRes.status, "connect_required");
   assert.equal(startRes.request_id, "onboard-1");
   assert.match(startRes.approval_url, /^https:\/\/connect\.nuri\.com\/approve\?session_id=/);
+  assert.equal(startRes.create_url, undefined);
+  assert.equal("create_url" in startRes, false);
 
-  // Poll while still pending -> returns same `connect_required`
+  // Poll while still pending -> returns same `connect_required` and still NO `create_url`
   const pendingRes = await walletTool.call({ action: "balance", request_id: "onboard-1" });
   assert.equal(pendingRes.status, "connect_required");
   assert.equal(pendingRes.approval_url, startRes.approval_url);
+  assert.equal(pendingRes.create_url, undefined);
+  assert.equal("create_url" in pendingRes, false);
 
   // Simulate user approving on connect.nuri.com with their Nuri Passkey PRF (`vector.prf_hex`)
   const connectSessionId = new URL(startRes.approval_url).searchParams.get("session_id");
@@ -1226,16 +1234,30 @@ try {
   const safeAddress = finRes.address;
   const arkadeAddress = finRes.arkade_address;
 
-  // Repeating `onboard-1` after wallet_key was already issued must NOT leak wallet_key a second time!
+  // Capture original persisted wallet_id to prove reconnect preserves exact wallet row
+  const inspectStore1 = openPrfAgentWalletStore({
+    path: dbPath,
+    encryptionKey: process.env.AGENT_KERNEL_ENCRYPTION_KEY,
+  });
+  const walletBeforeReconnect = inspectStore1.getWalletByKey(walletKey);
+  assert.ok(walletBeforeReconnect?.walletId);
+  inspectStore1.close();
+
+  // Repeating `onboard-1` while session is unexpired MUST safely retry and still return `wallet_key`!
   const repeatOnboard = await walletTool.call({ action: "balance", request_id: "onboard-1" });
   assert.equal(repeatOnboard.ok, true);
-  assert.equal(repeatOnboard.wallet_key, undefined);
+  assert.equal(repeatOnboard.status, "done");
+  assert.equal(repeatOnboard.wallet_key, walletKey);
+  assert.equal(repeatOnboard.address, safeAddress);
+  assert.equal(repeatOnboard.arkade_address, arkadeAddress);
 
   // Reconnecting with the SAME Passkey PRF (new session `onboard-reconnect`) MUST deterministically
-  // return the EXACT SAME `npw1_...` wallet_key, Safe address, and Arkade address!
+  // return the EXACT SAME `wallet_id`, `npw1_...` wallet_key, Safe address, and Arkade address,
+  // and MUST NOT return `create_url`!
   const reconStart = await walletTool.call({ action: "balance", new: true, request_id: "onboard-reconnect" });
   assert.equal(reconStart.status, "connect_required");
-  assert.equal(reconStart.create_url, `${mockOrigin}/`);
+  assert.equal(reconStart.create_url, undefined);
+  assert.equal("create_url" in reconStart, false);
   const reconSessionId = new URL(reconStart.approval_url).searchParams.get("session_id");
   const reconSessRec = connectSessions.get(reconSessionId);
   const reconReply = encryptGrantForTest({
@@ -1263,6 +1285,14 @@ try {
   assert.equal(reconFin.wallet_key, walletKey);
   assert.equal(reconFin.address, safeAddress);
   assert.equal(reconFin.arkade_address, arkadeAddress);
+
+  const inspectStore2 = openPrfAgentWalletStore({
+    path: dbPath,
+    encryptionKey: process.env.AGENT_KERNEL_ENCRYPTION_KEY,
+  });
+  const walletAfterReconnect = inspectStore2.getWalletByKey(walletKey);
+  assert.equal(walletAfterReconnect.walletId, walletBeforeReconnect.walletId);
+  inspectStore2.close();
 
   // Seed initial Base Safe USDC (5.00 USDC) and 2-of-2 Arkade VTXO (10,000 sats)
   chainState.balances.set(getAddress(safeAddress), 5_000_000n);
@@ -1330,6 +1360,82 @@ try {
   // Calling `wallet balance` automatically sweeps the funded Lightning VHTLC into 2-of-2 Arkade custody!
   const balAfterRecv = await walletTool.call({ action: "balance", wallet_key: walletKey });
   assert.equal(balAfterRecv.sats, 11_990); // 10,000 + 1,990 claimed!
+
+  // Step D2: Reconnect immediate balance sweep — a paid-but-unclaimed Lightning receive MUST sweep
+  // and appear immediately on Passkey reconnect (`startOrPollOnboarding` finalization)!
+  const recvLnReconnect = await walletTool.call({
+    action: "receive",
+    wallet_key: walletKey,
+    rail: "lightning",
+    amount_sats: 1500,
+    request_id: "ln-in-reconnect",
+  });
+  assert.equal(recvLnReconnect.ok, true, JSON.stringify(recvLnReconnect));
+  assert.equal(recvLnReconnect.expected_sats, 1490);
+  addArkVtxo(arkState.lastReceiveLockup.swapPkScriptHex, {
+    txid: "ce".repeat(32),
+    vout: 0,
+    value: arkState.lastReceiveLockup.toAmount,
+    isSpent: false,
+    isUnrolled: false,
+    isSwept: false,
+  });
+
+  const reconSweepStart = await walletTool.call({
+    action: "balance",
+    new: true,
+    request_id: "onboard-reconnect-sweep",
+  });
+  assert.equal(reconSweepStart.status, "connect_required");
+  assert.equal(reconSweepStart.create_url, undefined);
+  const reconSweepSid = new URL(reconSweepStart.approval_url).searchParams.get("session_id");
+  const reconSweepRec = connectSessions.get(reconSweepSid);
+  const reconSweepReply = encryptGrantForTest({
+    prfBytes: hex.decode(vector.prf_hex),
+    sessionId: reconSweepSid,
+    replyPubkey: reconSweepRec.payload.reply_pubkey,
+    index: reconSweepRec.payload.index,
+    policy: reconSweepRec.payload.policy,
+  });
+  const reconSweepSig = await MAIN_WALLET_ACCOUNT.signMessage({
+    message: agentGrantProofMessage({
+      sessionId: reconSweepSid,
+      replyPubkey: reconSweepRec.payload.reply_pubkey,
+      reply: reconSweepReply,
+    }),
+  });
+  reconSweepRec.status = "approved";
+  reconSweepRec.wallet = {
+    cred_id_b64u: TEST_CRED_ID,
+    eth_user_eoa: MAIN_WALLET_ACCOUNT.address,
+  };
+  reconSweepRec.result = {
+    ...reconSweepReply,
+    address: MAIN_WALLET_ACCOUNT.address,
+    signature: reconSweepSig,
+  };
+  const preSweepCheck = openPrfAgentWalletStore({
+    path: dbPath,
+    encryptionKey: process.env.AGENT_KERNEL_ENCRYPTION_KEY,
+  });
+  assert.equal(preSweepCheck.listPendingLightningReceives(walletBeforeReconnect.walletId).length, 1);
+  preSweepCheck.close();
+
+  const reconSweepFin = await walletTool.call({
+    action: "balance",
+    request_id: "onboard-reconnect-sweep",
+  });
+  assert.equal(reconSweepFin.ok, true);
+  assert.equal(reconSweepFin.status, "done");
+  assert.equal(reconSweepFin.wallet_key, walletKey);
+  assert.equal(reconSweepFin.sats, 13_480); // 11,990 + 1,490 swept immediately on reconnect!
+
+  const postSweepCheck = openPrfAgentWalletStore({
+    path: dbPath,
+    encryptionKey: process.env.AGENT_KERNEL_ENCRYPTION_KEY,
+  });
+  assert.equal(postSweepCheck.listPendingLightningReceives(walletBeforeReconnect.walletId).length, 0);
+  postSweepCheck.close();
 
   // Step E: Dry-run dual-rail HTTP 402 (`prefer: "lightning"` vs `prefer: "usdc"`)
   const dryLn = await walletTool.call({
@@ -1530,6 +1636,163 @@ try {
     exitTimelock: 605184n,
   });
   assert.equal(vtxoScript.leaves.length, 3);
+
+  // Step N: Store immutability (`wallet_custody_mismatch`) + retryable/expiring `popIssuedGrantWalletKey`
+  {
+    const memStore = openPrfAgentWalletStore({
+      path: ":memory:",
+      encryptionKey: process.env.AGENT_KERNEL_ENCRYPTION_KEY,
+    });
+    try {
+      const baseNow = 1_800_000_000_000;
+      const baseSession = memStore.createGrantSession({
+        requestId: "req-retry-key",
+        connectSessionId: "conn-retry-key",
+        slotIndex: 0,
+        replyPubkey: "aa".repeat(32),
+        replySkHex: "bb".repeat(32),
+        policy: { max_usdc_per_tx: "5" },
+        approvalUrl: "https://connect.nuri.com/approve?session_id=conn-retry-key",
+        expiresAt: new Date(baseNow + 60_000).toISOString(),
+        nowMs: baseNow,
+      });
+      assert.equal(baseSession.status, "pending");
+
+      const baseWalletArgs = {
+        requestId: "req-retry-key",
+        credIdB64u: "cred-immutable-1",
+        slotIndex: 0,
+        mainEoa: MAIN_WALLET_ACCOUNT.address,
+        passkeySignerAddress: "0x1111111111111111111111111111111111111111",
+        agentEthEoa: "0x2222222222222222222222222222222222222222",
+        cosignerEoa: "0x3333333333333333333333333333333333333333",
+        safeAddress: "0x4444444444444444444444444444444444444444",
+        agentBtcPub33Hex: `02${"11".repeat(32)}`,
+        cosignerBtcPub33Hex: `03${"22".repeat(32)}`,
+        aggregatedBtcXonlyHex: "33".repeat(32),
+        arkadeAddress: "ark1originaladdress00000000000000000000000000000000000000000",
+        policy: { max_usdc_per_tx: "5" },
+        agentEthPrivHex: "44".repeat(32),
+        agentBtcPrivHex: "55".repeat(32),
+        nowMs: baseNow,
+      };
+      const orig = memStore.finalizeGrantWallet(baseWalletArgs);
+
+      // Repeated polls of the same approved request_id before expires_at MUST keep returning wallet_key
+      assert.equal(memStore.getGrantSession("req-retry-key", baseNow).hasIssuedWalletKey, true);
+      assert.equal(memStore.popIssuedGrantWalletKey("req-retry-key", { nowMs: baseNow + 1_000 }), orig.walletKey);
+      assert.equal(memStore.popIssuedGrantWalletKey("req-retry-key", { nowMs: baseNow + 30_000 }), orig.walletKey);
+      assert.equal(memStore.getGrantSession("req-retry-key", baseNow + 30_000).hasIssuedWalletKey, true);
+
+      // After expires_at, popIssuedGrantWalletKey wipes issued_wallet_key_sealed and returns null
+      assert.equal(memStore.getGrantSession("req-retry-key", baseNow + 60_001).hasIssuedWalletKey, false);
+      assert.equal(memStore.popIssuedGrantWalletKey("req-retry-key", { nowMs: baseNow + 60_001 }), null);
+      assert.equal(memStore.getGrantSession("req-retry-key", baseNow).hasIssuedWalletKey, false);
+
+      // Finalizing the same (cred_id_b64u, slot_index) with identical custody fields preserves wallet_id
+      const sameCustody = memStore.finalizeGrantWallet({
+        ...baseWalletArgs,
+        requestId: null,
+        policy: { max_usdc_per_tx: "10" },
+        nowMs: baseNow + 2_000,
+      });
+      assert.equal(sameCustody.wallet.walletId, orig.wallet.walletId);
+      assert.equal(sameCustody.walletKey, orig.walletKey);
+
+      // Attempting to finalize existing (cred_id_b64u, slot_index) with mismatched safe_address MUST throw
+      // `wallet_custody_mismatch` and MUST NOT overwrite the DB row!
+      assert.throws(
+        () =>
+          memStore.finalizeGrantWallet({
+            ...baseWalletArgs,
+            requestId: null,
+            safeAddress: "0x9999999999999999999999999999999999999999",
+            nowMs: baseNow + 3_000,
+          }),
+        (err) => err?.code === "wallet_custody_mismatch" && /wallet_custody_mismatch.*safe_address/.test(err.message),
+      );
+      assert.throws(
+        () =>
+          memStore.finalizeGrantWallet({
+            ...baseWalletArgs,
+            requestId: null,
+            arkadeAddress: "ark1differentaddress0000000000000000000000000000000000000000",
+            nowMs: baseNow + 3_000,
+          }),
+        (err) => err?.code === "wallet_custody_mismatch" && /wallet_custody_mismatch.*arkade_address/.test(err.message),
+      );
+
+      // Verify persisted row and sealed secrets remain 100% untouched
+      const unchanged = memStore.getWalletById(orig.wallet.walletId);
+      assert.equal(unchanged.safeAddress, baseWalletArgs.safeAddress);
+      assert.equal(unchanged.arkadeAddress, baseWalletArgs.arkadeAddress);
+      assert.equal(unchanged.mainEoa, baseWalletArgs.mainEoa);
+      const unlocked = memStore.unlockWalletSecrets(orig.walletKey);
+      assert.equal(unlocked.wallet.walletId, orig.wallet.walletId);
+      assert.equal(unlocked.secrets.agentEthPrivHex, baseWalletArgs.agentEthPrivHex);
+    } finally {
+      memStore.close();
+    }
+  }
+
+  // Step O: Arkade ASP signer rotation — `listSpendableVtxos` scans `info.deprecatedSigners` scripts too!
+  {
+    const depSignerPriv = hex.decode("88".repeat(32));
+    const depSignerPub33Hex = hex.encode(secp256k1.getPublicKey(depSignerPriv, true));
+    const depSignerXonly = toXOnly(hex.decode(depSignerPub33Hex));
+    const walletRec = {
+      aggregatedBtcXonlyHex: "11".repeat(32),
+      agentBtcPub33Hex: `02${"22".repeat(32)}`,
+    };
+    const activeScript = new NuriAgentVtxoScript({
+      aggregatedXonly: walletRec.aggregatedBtcXonlyHex,
+      agentClientXonly: "22".repeat(32),
+      serverXonly: ARK_SERVER_XONLY,
+      exitTimelock: 605184n,
+    });
+    const depScript = new NuriAgentVtxoScript({
+      aggregatedXonly: walletRec.aggregatedBtcXonlyHex,
+      agentClientXonly: "22".repeat(32),
+      serverXonly: depSignerXonly,
+      exitTimelock: 605184n,
+    });
+    const activePkHex = hex.encode(activeScript.pkScript);
+    const depPkHex = hex.encode(depScript.pkScript);
+    assert.notEqual(activePkHex, depPkHex);
+
+    const seenScripts = [];
+    const rotatedRuntime = createAgentArkadeRuntime({
+      env: process.env,
+      operatorProvider: {
+        getInfo: async () => ({
+          ...(await fakeOperator.getInfo()),
+          deprecatedSigners: [{ pubkey: depSignerPub33Hex, cutoffDate: 0n }],
+        }),
+      },
+      indexerProvider: {
+        getVtxos: async ({ scripts }) => {
+          seenScripts.push(...scripts);
+          const vtxos = [];
+          if (scripts.includes(activePkHex)) {
+            vtxos.push({ txid: "a1".repeat(32), vout: 0, value: 1_000, isSpent: false, script: activePkHex });
+          }
+          if (scripts.includes(depPkHex)) {
+            vtxos.push({ txid: "d2".repeat(32), vout: 1, value: 2_500, isSpent: false, script: depPkHex });
+          }
+          return { vtxos };
+        },
+      },
+    });
+    const listed = await rotatedRuntime.listSpendableVtxos(walletRec);
+    assert.equal(seenScripts.includes(activePkHex), true);
+    assert.equal(seenScripts.includes(depPkHex), true);
+    assert.equal(listed.totalSats, 3_500n);
+    assert.equal(listed.coins.length, 2);
+    const depCoin = listed.coins.find((c) => c.txid === "d2".repeat(32));
+    assert.ok(depCoin);
+    assert.equal(hex.encode(depCoin.tapTree), hex.encode(depScript.encode()));
+    assert.notEqual(hex.encode(depCoin.tapTree), hex.encode(activeScript.encode()));
+  }
 
   // Verify L402 & Lightning MPP header parsers directly
   const parsedL402 = parseL402Challenge({

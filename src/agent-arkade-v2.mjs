@@ -609,20 +609,60 @@ export function createAgentArkadeRuntime({
 
   async function listSpendableVtxos(walletRecord) {
     const derived = await deriveWalletScript(walletRecord);
+    const scriptsByHex = new Map([
+      [
+        derived.pkScriptHex,
+        {
+          tapLeafScript: derived.vtxoScript.forfeit(),
+          tapTree: derived.vtxoScript.encode(),
+        },
+      ],
+    ]);
+    for (const signer of Array.isArray(derived.info.deprecatedSigners) ? derived.info.deprecatedSigners : []) {
+      if (!signer?.pubkey) continue;
+      try {
+        const depServerXonly = toXOnly(hexToBytes(signer.pubkey), "deprecated ark signer key");
+        const depScript = new NuriAgentVtxoScript({
+          aggregatedXonly: walletRecord.aggregatedBtcXonlyHex,
+          agentClientXonly: derived.vtxoScript.agentClientXonly,
+          serverXonly: depServerXonly,
+          exitTimelock: derived.info.unilateralExitDelay,
+          decayOffsetSeconds,
+        });
+        const depPkScriptHex = bytesToHex(depScript.pkScript);
+        if (!scriptsByHex.has(depPkScriptHex)) {
+          scriptsByHex.set(depPkScriptHex, {
+            tapLeafScript: depScript.forfeit(),
+            tapTree: depScript.encode(),
+          });
+        }
+      } catch {
+        // Ignore malformed deprecated signer entries.
+      }
+    }
     const { vtxos = [] } = await indexer.getVtxos({
-      scripts: [derived.pkScriptHex],
+      scripts: [...scriptsByHex.keys()],
       spendableOnly: true,
     });
-    const tapLeafScript = derived.vtxoScript.forfeit();
-    const tapTree = derived.vtxoScript.encode();
-    const coins = vtxos
-      .filter((v) => !v.isSpent && Number(v.value) > 0)
-      .map((v) => ({
+    const fallbackMeta = scriptsByHex.get(derived.pkScriptHex);
+    const seen = new Set();
+    const coins = [];
+    for (const v of vtxos) {
+      if (v.isSpent || !(Number(v.value) > 0)) continue;
+      if (v.txid !== undefined && v.vout !== undefined) {
+        const outpoint = `${v.txid}:${v.vout}`;
+        if (seen.has(outpoint)) continue;
+        seen.add(outpoint);
+      }
+      const scriptHex = typeof v.script === "string" ? v.script.trim().toLowerCase() : null;
+      const meta = (scriptHex && scriptsByHex.get(scriptHex)) || fallbackMeta;
+      coins.push({
         ...v,
         value: Number(v.value),
-        tapLeafScript,
-        tapTree,
-      }));
+        tapLeafScript: meta.tapLeafScript,
+        tapTree: meta.tapTree,
+      });
+    }
     const totalSats = coins.reduce((sum, v) => sum + BigInt(v.value), 0n);
     return {
       ...derived,

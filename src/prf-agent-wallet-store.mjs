@@ -299,11 +299,26 @@ export function openPrfAgentWalletStore({
     return getGrantSession(requestId);
   }
 
-  function getGrantSession(requestId) {
+  function parseSessionExpiresAtMs(expiresAt, createdAt) {
+    const raw = String(expiresAt ?? "").trim();
+    if (/^\d+$/.test(raw)) {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n > 0) {
+        return n < 1e11 ? n * 1000 : n;
+      }
+    }
+    const parsed = Date.parse(raw);
+    if (Number.isFinite(parsed)) return parsed;
+    const created = Number(createdAt);
+    return Number.isFinite(created) && created > 0 ? created + 15 * 60_000 : 0;
+  }
+
+  function getGrantSession(requestId, nowMs = Date.now()) {
     const row = db
       .prepare("SELECT * FROM nuri_prf_grant_sessions WHERE request_id = ?")
       .get(String(requestId || ""));
     if (!row) return null;
+    const expiresAtMs = parseSessionExpiresAtMs(row.expires_at, row.created_at);
     return {
       requestId: row.request_id,
       connectSessionId: row.connect_session_id,
@@ -313,9 +328,10 @@ export function openPrfAgentWalletStore({
       policy: JSON.parse(row.policy_json || "{}"),
       approvalUrl: row.approval_url,
       expiresAt: row.expires_at,
+      expiresAtMs,
       status: row.status,
       walletId: row.wallet_id || null,
-      hasIssuedWalletKey: Boolean(row.issued_wallet_key_sealed),
+      hasIssuedWalletKey: Boolean(row.issued_wallet_key_sealed) && nowMs <= expiresAtMs,
       createdAt: Number(row.created_at),
       updatedAt: Number(row.updated_at),
     };
@@ -339,13 +355,20 @@ export function openPrfAgentWalletStore({
     }
   }
 
-  function popIssuedGrantWalletKey(requestId) {
+  function popIssuedGrantWalletKey(requestId, { nowMs = Date.now() } = {}) {
     const row = db
       .prepare(
-        "SELECT request_id, connect_session_id, wallet_id, issued_wallet_key_sealed FROM nuri_prf_grant_sessions WHERE request_id = ?",
+        "SELECT request_id, connect_session_id, wallet_id, issued_wallet_key_sealed, expires_at, created_at FROM nuri_prf_grant_sessions WHERE request_id = ?",
       )
       .get(String(requestId || ""));
     if (!row || !row.issued_wallet_key_sealed) return null;
+    const expiresAtMs = parseSessionExpiresAtMs(row.expires_at, row.created_at);
+    if (nowMs > expiresAtMs) {
+      db.prepare(
+        "UPDATE nuri_prf_grant_sessions SET issued_wallet_key_sealed = NULL, updated_at = ? WHERE request_id = ?",
+      ).run(nowMs, row.request_id);
+      return null;
+    }
     const sessKey = deriveSessionSealKey(masterKey, row.request_id);
     try {
       const opened = openJson(
@@ -353,9 +376,6 @@ export function openPrfAgentWalletStore({
         sessKey,
         `${SESSION_AAD_PREFIX}:key:${row.request_id}:${row.connect_session_id}`,
       );
-      db.prepare(
-        "UPDATE nuri_prf_grant_sessions SET issued_wallet_key_sealed = NULL, updated_at = ? WHERE request_id = ?",
-      ).run(Date.now(), row.request_id);
       return opened.walletKey;
     } finally {
       sessKey.fill(0);
@@ -401,14 +421,51 @@ export function openPrfAgentWalletStore({
     if (!isPrfWalletKey(resolvedKey)) throw new Error("invalid_prf_wallet_key");
     const keyHash = hashWalletKey(resolvedKey);
 
+    const normMainEoa = getAddress(mainEoa);
+    const normPasskeySigner = getAddress(passkeySignerAddress);
+    const normAgentEthEoa = getAddress(agentEthEoa);
+    const normCosignerEoa = getAddress(cosignerEoa);
+    const normSafeAddress = getAddress(safeAddress);
+    const normAgentBtcPub33 = String(agentBtcPub33Hex).toLowerCase();
+    const normCosignerBtcPub33 = String(cosignerBtcPub33Hex).toLowerCase();
+    const normAggregatedBtcXonly = String(aggregatedBtcXonlyHex).toLowerCase();
+    const normArkadeAddress = arkadeAddress ? String(arkadeAddress) : null;
+
     db.exec("BEGIN IMMEDIATE");
     let effectiveWalletId;
     try {
       const existingRow = db
         .prepare(
-          "SELECT wallet_id FROM nuri_prf_agent_wallets WHERE cred_id_b64u = ? AND slot_index = ? ORDER BY updated_at DESC LIMIT 1",
+          "SELECT * FROM nuri_prf_agent_wallets WHERE cred_id_b64u = ? AND slot_index = ? ORDER BY updated_at DESC LIMIT 1",
         )
         .get(credIdB64u, slot);
+
+      if (existingRow) {
+        const mismatches = [];
+        const checkEq = (col, cur, next) => {
+          if (String(cur || "").toLowerCase() !== String(next || "").toLowerCase()) {
+            mismatches.push(col);
+          }
+        };
+        checkEq("main_eoa", existingRow.main_eoa, normMainEoa);
+        checkEq("safe_address", existingRow.safe_address, normSafeAddress);
+        checkEq("passkey_signer_address", existingRow.passkey_signer_address, normPasskeySigner);
+        checkEq("agent_eth_eoa", existingRow.agent_eth_eoa, normAgentEthEoa);
+        checkEq("agent_btc_pub33_hex", existingRow.agent_btc_pub33_hex, normAgentBtcPub33);
+        checkEq("cosigner_eoa", existingRow.cosigner_eoa, normCosignerEoa);
+        checkEq("cosigner_btc_pub33_hex", existingRow.cosigner_btc_pub33_hex, normCosignerBtcPub33);
+        checkEq("aggregated_btc_xonly_hex", existingRow.aggregated_btc_xonly_hex, normAggregatedBtcXonly);
+        if (existingRow.arkade_address && normArkadeAddress && existingRow.arkade_address !== normArkadeAddress) {
+          mismatches.push("arkade_address");
+        }
+        if (mismatches.length > 0) {
+          const err = new Error(`wallet_custody_mismatch:${mismatches.join(",")}`);
+          err.code = "wallet_custody_mismatch";
+          err.mismatchedFields = mismatches;
+          throw err;
+        }
+      }
+
       effectiveWalletId = existingRow ? existingRow.wallet_id : walletId || randomUUID();
 
       const sealKey = deriveWalletSealKey(masterKey, resolvedKey, effectiveWalletId);
@@ -420,7 +477,7 @@ export function openPrfAgentWalletStore({
             agentBtcPrivHex: String(agentBtcPrivHex).replace(/^0x/, "").toLowerCase(),
           },
           sealKey,
-          `${STORE_AAD_PREFIX}:${effectiveWalletId}:${credIdB64u}:${slot}:${getAddress(safeAddress)}`,
+          `${STORE_AAD_PREFIX}:${effectiveWalletId}:${credIdB64u}:${slot}:${normSafeAddress}`,
         );
       } finally {
         sealKey.fill(0);
@@ -433,30 +490,14 @@ export function openPrfAgentWalletStore({
         db.prepare(
           `UPDATE nuri_prf_agent_wallets
               SET wallet_key_hash = ?,
-                  main_eoa = ?,
-                  passkey_signer_address = ?,
-                  agent_eth_eoa = ?,
-                  cosigner_eoa = ?,
-                  safe_address = ?,
-                  agent_btc_pub33_hex = ?,
-                  cosigner_btc_pub33_hex = ?,
-                  aggregated_btc_xonly_hex = ?,
-                  arkade_address = COALESCE(?, arkade_address),
+                  arkade_address = COALESCE(arkade_address, ?),
                   policy_json = ?,
                   sealed_secrets = ?,
                   updated_at = ?
             WHERE wallet_id = ?`,
         ).run(
           keyHash,
-          getAddress(mainEoa),
-          getAddress(passkeySignerAddress),
-          getAddress(agentEthEoa),
-          getAddress(cosignerEoa),
-          getAddress(safeAddress),
-          String(agentBtcPub33Hex).toLowerCase(),
-          String(cosignerBtcPub33Hex).toLowerCase(),
-          String(aggregatedBtcXonlyHex).toLowerCase(),
-          arkadeAddress,
+          normArkadeAddress,
           JSON.stringify(policy || {}),
           sealedSecrets,
           nowMs,
@@ -475,15 +516,15 @@ export function openPrfAgentWalletStore({
           keyHash,
           credIdB64u,
           slot,
-          getAddress(mainEoa),
-          getAddress(passkeySignerAddress),
-          getAddress(agentEthEoa),
-          getAddress(cosignerEoa),
-          getAddress(safeAddress),
-          String(agentBtcPub33Hex).toLowerCase(),
-          String(cosignerBtcPub33Hex).toLowerCase(),
-          String(aggregatedBtcXonlyHex).toLowerCase(),
-          arkadeAddress,
+          normMainEoa,
+          normPasskeySigner,
+          normAgentEthEoa,
+          normCosignerEoa,
+          normSafeAddress,
+          normAgentBtcPub33,
+          normCosignerBtcPub33,
+          normAggregatedBtcXonly,
+          normArkadeAddress,
           JSON.stringify(policy || {}),
           sealedSecrets,
           nowMs,
