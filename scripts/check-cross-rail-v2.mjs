@@ -270,7 +270,8 @@ try {
         throw new Error(`insufficient_arkade_sats:${arkSats}:${total}`);
       }
       arkSats -= BigInt(total);
-      const pre = preimages.get(facts.paymentHash) || "ab".repeat(32);
+      const isPendingOnly = pendingBolt11Hashes.has(facts.paymentHash);
+      const pre = isPendingOnly ? null : preimages.get(facts.paymentHash) || "ab".repeat(32);
       const arkTxid = `ark_${createHash("sha256").update(`ln:${bolt11}:${transfers.length}`).digest("hex").slice(0, 24)}`;
       transfers.push({ rail: "lightning", paymentHash: facts.paymentHash, totalSats: total, arkTxid });
 
@@ -290,9 +291,9 @@ try {
       }
 
       return {
-        status: "done",
+        status: isPendingOnly ? "pending" : "done",
         paymentHash: facts.paymentHash,
-        preimageHex: pre,
+        ...(pre ? { preimageHex: pre } : {}),
         amountSats: facts.amountSats,
         feeSats: 30,
         totalSats: total,
@@ -449,6 +450,7 @@ try {
     throw new Error(`unexpected merchant url: ${url}`);
   };
 
+  const pendingBolt11Hashes = new Set();
   let walletSafeAddr = null;
   const walletTool = createMcpWalletTool({
     accountFlow: { authorized: async () => null },
@@ -462,6 +464,7 @@ try {
       safeRuntime,
       arkadeRuntime,
       swapkitClient,
+      getBtcUsdRate: async () => BTC_USD,
       bridgeTimeoutMs: 5_000,
       bridgePollIntervalMs: 50,
     },
@@ -592,8 +595,85 @@ try {
   assert.equal(xmrRes.ok, false);
   assert.match(xmrRes.error, /swapkit\.nuri\.com\/mcp/);
 
+  // F. Cross-rail cap guard: `max_amount: "0.0001"` MUST block L402 (`500 sats`) with STOP error!
+  safeUsdcUnits = 0n;
+  arkSats = 10_000n;
+  const txBeforeCap = transfers.length;
+  const overcapL402 = await walletTool.call({
+    action: "pay",
+    wallet_key: walletKey,
+    to: "https://l402-only.example.com/data",
+    max_amount: "0.0001",
+    request_id: "overcap-l402-usd",
+  });
+  assert.equal(overcapL402.ok, false, JSON.stringify(overcapL402));
+  assert.deepEqual(overcapL402.price, { amount: "500", currency: "sats" });
+  assert.match(overcapL402.error, /STOP and ask the person first/);
+  assert.equal(transfers.length, txBeforeCap, "over-cap L402 must not send any sats");
+
+  // G. Cross-rail cap guard: `max_amount: "0.0001"` MUST block raw BOLT11 (`500 sats`) too!
+  const overcapBolt11 = await walletTool.call({
+    action: "pay",
+    wallet_key: walletKey,
+    to: l402Inv.invoice,
+    max_amount: "0.0001",
+    request_id: "overcap-bolt11-usd",
+  });
+  assert.equal(overcapBolt11.ok, false, JSON.stringify(overcapBolt11));
+  assert.deepEqual(overcapBolt11.price, { amount: "500", currency: "sats" });
+  assert.match(overcapBolt11.error, /STOP and ask the person first/);
+  assert.equal(transfers.length, txBeforeCap, "over-cap BOLT11 must not send any sats");
+
+  // H. Dual-rail `capHint`: when BOTH USDC and sats are funded and caller sets `max_amount`, pick x402!
+  safeUsdcUnits = 5_000_000n;
+  arkSats = 10_000n;
+  const dualWithUsdCap = await walletTool.call({
+    action: "pay",
+    wallet_key: walletKey,
+    to: "https://dual.example.com/auto",
+    max_amount: "0.05",
+    request_id: "dual-usd-cap-hint",
+  });
+  assert.equal(dualWithUsdCap.ok, true, JSON.stringify(dualWithUsdCap));
+  assert.equal(dualWithUsdCap.protocol, "x402");
+  assert.equal(dualWithUsdCap.rail, "usdc");
+
+  // I. Pending BOLT11 op is saved in history and idempotent replay returns cached pending receipt without double-submitting!
+  const pendingInv = makeBolt11(800, "99".repeat(32));
+  pendingBolt11Hashes.add(pendingInv.paymentHash);
+  arkSats = 10_000n;
+  const txBeforePending = transfers.length;
+  const firstPending = await walletTool.call({
+    action: "pay",
+    wallet_key: walletKey,
+    to: pendingInv.invoice,
+    max_sats: 1000,
+    request_id: "pending-ln-replay",
+  });
+  assert.equal(firstPending.ok, true, JSON.stringify(firstPending));
+  assert.equal(firstPending.status, "pending");
+  assert.equal(transfers.length, txBeforePending + 1);
+
+  const secondPending = await walletTool.call({
+    action: "pay",
+    wallet_key: walletKey,
+    to: pendingInv.invoice,
+    max_sats: 1000,
+    request_id: "pending-ln-replay",
+  });
+  assert.equal(secondPending.ok, true, JSON.stringify(secondPending));
+  assert.equal(secondPending.status, "pending");
+  assert.equal(secondPending.receipt?.tx, firstPending.receipt?.tx);
+  assert.equal(transfers.length, txBeforePending + 1, "pending replay must NOT re-submit payment");
+
+  const hist = await walletTool.call({ action: "history", wallet_key: walletKey });
+  const pendingHistItem = hist.history.find((h) => h.request_id === "pending-ln-replay");
+  assert.ok(pendingHistItem, "pending op must appear in history");
+  assert.equal(pendingHistItem.status, "pending");
+  assert.equal(pendingHistItem.rail, "lightning");
+
   walletTool.close();
-  console.log("cross-rail v2 check ok: chained create_url, universal to, dual-rail auto-pick, USDC->BOLT11, USDC->L402 bridge, Arkade->x402 bridge, bc1/BIP21 from BTC & USDC, and Monero->SwapKit redirect verified");
+  console.log("cross-rail v2 check ok: chained create_url, universal to, dual-rail auto-pick + capHint, cross-rail max_amount/max_sats guards, pending idempotency replay, USDC->BOLT11, USDC->L402 bridge, Arkade->x402 bridge, bc1/BIP21 from BTC & USDC, and Monero->SwapKit redirect verified");
 } finally {
   Object.keys(process.env).forEach((k) => {
     if (!(k in savedEnv)) delete process.env[k];

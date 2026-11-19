@@ -11,7 +11,11 @@ import {
   generateGrantReplyKeypair,
   verifyAgentGrantProof,
 } from "./agent-grant-crypto.mjs";
-import { createPrfHttp402Payer } from "./agent-lightning-pay.mjs";
+import {
+  createPrfHttp402Payer,
+  defaultGetBtcUsdRate,
+  usdUnitsToMaxSats,
+} from "./agent-lightning-pay.mjs";
 import {
   BASE_USDC_ADDRESS,
   createAgentSafeRuntime,
@@ -112,6 +116,7 @@ export function createPrfWalletCoordinator({
   swapkitClient,
   http402Payer,
   merchantFetch,
+  getBtcUsdRate,
   fetchImpl = fetch,
   bridgeTimeoutMs = 45_000,
   bridgePollIntervalMs = 2_000,
@@ -404,12 +409,15 @@ export function createPrfWalletCoordinator({
     return await bridgeArkadeToUsdc({ walletRecord, secrets, neededUsdcUnits, opId });
   }
 
+  const resolveBtcUsdRate = getBtcUsdRate || (() => defaultGetBtcUsdRate(fetchImpl));
+
   function ensurePayer() {
     if (!payer) {
       payer = createPrfHttp402Payer({
         safeRuntime: ensureSafe(),
         arkadeRuntime: ensureArkade(),
         ensureRailFunded,
+        getBtcUsdRate: resolveBtcUsdRate,
         ...(merchantFetch ? { merchantFetch } : {}),
       });
     }
@@ -843,7 +851,17 @@ export function createPrfWalletCoordinator({
     if (maxSats !== undefined && maxSats !== null && BigInt(facts.amountSats) > BigInt(maxSats)) {
       const err = new Error("invoice_exceeds_max_sats");
       err.code = "over_max_amount";
+      err.invoiceSats = facts.amountSats;
       throw err;
+    }
+    if (maxAmountUnits !== undefined && maxAmountUnits !== null) {
+      const btcUsd = await resolveBtcUsdRate().catch(() => null);
+      if (BigInt(facts.amountSats) > usdUnitsToMaxSats(maxAmountUnits, btcUsd)) {
+        const err = new Error("invoice_exceeds_max_amount");
+        err.code = "over_max_amount";
+        err.invoiceSats = facts.amountSats;
+        throw err;
+      }
     }
 
     const arkBal = await ensureArkade().readBalance(wallet).catch(() => ({ sats: 0n }));
@@ -970,7 +988,17 @@ export function createPrfWalletCoordinator({
     if (maxSats !== undefined && maxSats !== null && BigInt(amountSats) > BigInt(maxSats)) {
       const err = new Error("btc_payment_exceeds_max_sats");
       err.code = "over_max_amount";
+      err.invoiceSats = amountSats;
       throw err;
+    }
+    if (maxAmountUnits !== undefined && maxAmountUnits !== null) {
+      const btcUsd = await resolveBtcUsdRate().catch(() => null);
+      if (BigInt(amountSats) > usdUnitsToMaxSats(maxAmountUnits, btcUsd)) {
+        const err = new Error("btc_payment_exceeds_max_amount");
+        err.code = "over_max_amount";
+        err.invoiceSats = amountSats;
+        throw err;
+      }
     }
 
     const [arkRes, usdcRes] = await Promise.allSettled([
@@ -1112,7 +1140,7 @@ export function createPrfWalletCoordinator({
         : randomUUID();
 
     const prior = db.getOperation(wallet.walletId, reqId);
-    if (prior && prior.status === "done" && !args.dry_run) {
+    if (prior && (prior.status === "done" || prior.status === "pending") && !args.dry_run) {
       return prior.result;
     }
 
@@ -1187,13 +1215,13 @@ export function createPrfWalletCoordinator({
             : {}),
         };
 
-        if (!args.dry_run && out.status === "done") {
+        if (!args.dry_run && (out.status === "done" || out.status === "pending")) {
           db.recordOperation({
             walletId: wallet.walletId,
             requestId: reqId,
             action: "pay",
             rail: res.rail || "usdc",
-            status: "done",
+            status: out.status,
             amountDisplay:
               res.amount_units !== undefined
                 ? unitsToDecimal(String(res.amount_units), 6)
@@ -1271,13 +1299,13 @@ export function createPrfWalletCoordinator({
             },
             next: `Paid ${res.amountSats} sats over Lightning (auto-converted from ${res.depositUsdc} Base USDC).`,
           };
-          if (res.status === "done") {
+          if (res.status === "done" || res.status === "pending") {
             db.recordOperation({
               walletId: wallet.walletId,
               requestId: reqId,
               action: "pay",
               rail: "lightning",
-              status: "done",
+              status: res.status,
               amountDisplay: `${res.amountSats} sats`,
               summary: { kind: "pay", to: res.paymentHash, tx: res.txHash },
               result: out,
@@ -1302,13 +1330,13 @@ export function createPrfWalletCoordinator({
             to: paid.paymentHash,
           },
         };
-        if (paid.status === "done") {
+        if (paid.status === "done" || paid.status === "pending") {
           db.recordOperation({
             walletId: wallet.walletId,
             requestId: reqId,
             action: "pay",
             rail: "lightning",
-            status: "done",
+            status: paid.status,
             amountDisplay: `${paid.amountSats} sats`,
             summary: { kind: "pay", to: paid.paymentHash, tx: paid.arkTxid },
             result: out,
@@ -1357,13 +1385,13 @@ export function createPrfWalletCoordinator({
               to: target,
             },
           };
-          if (res.status === "done") {
+          if (res.status === "done" || res.status === "pending") {
             db.recordOperation({
               walletId: wallet.walletId,
               requestId: reqId,
               action: "pay",
               rail: "lightning",
-              status: "done",
+              status: res.status,
               amountDisplay: `${res.amountSats} sats`,
               summary: { kind: "pay", to: target, tx: res.txHash },
               result: out,
@@ -1389,13 +1417,13 @@ export function createPrfWalletCoordinator({
             to: target,
           },
         };
-        if (paid.status === "done") {
+        if (paid.status === "done" || paid.status === "pending") {
           db.recordOperation({
             walletId: wallet.walletId,
             requestId: reqId,
             action: "pay",
             rail: "lightning",
-            status: "done",
+            status: paid.status,
             amountDisplay: `${paid.amountSats} sats`,
             summary: { kind: "pay", to: target, tx: paid.arkTxid },
             result: out,
@@ -1427,13 +1455,13 @@ export function createPrfWalletCoordinator({
           opId,
           reqId,
         });
-        if (out.status === "done") {
+        if (out.status === "done" || out.status === "pending") {
           db.recordOperation({
             walletId: wallet.walletId,
             requestId: reqId,
             action: "pay",
             rail: "btc",
-            status: "done",
+            status: out.status,
             amountDisplay: `${sats} sats`,
             summary: { kind: "send", to: target, tx: out.receipt?.tx || null },
             result: out,
@@ -1678,15 +1706,29 @@ export function createPrfWalletCoordinator({
         };
       }
       const msg = String(err?.message || err);
-      db.recordOperation({
-        walletId: wallet.walletId,
-        requestId: reqId,
-        action: "pay",
-        rail: args.invoice || args.amount_sats ? "lightning" : "usdc",
-        status: "failed",
-        summary: { kind: "pay", reason: msg.slice(0, 120) },
-        result: { ok: false, status: "failed", error: msg },
-      });
+      const rawTgt = String(args.invoice || args.to || "").trim();
+      const inferredRail =
+        args.invoice || BOLT11_RE.test(rawTgt) || LN_ADDRESS_RE.test(rawTgt)
+          ? "lightning"
+          : isOnchainBtcAddress(rawTgt) || parseBip21Uri(rawTgt)
+            ? "btc"
+            : isValidArkAddress(rawTgt)
+              ? "arkade"
+              : args.amount_sats && !args.amount
+                ? "lightning"
+                : "usdc";
+      const currentOp = db.getOperation(wallet.walletId, reqId);
+      if (!currentOp || (currentOp.status !== "done" && currentOp.status !== "pending")) {
+        db.recordOperation({
+          walletId: wallet.walletId,
+          requestId: reqId,
+          action: "pay",
+          rail: inferredRail,
+          status: "failed",
+          summary: { kind: "pay", to: rawTgt || null, reason: msg.slice(0, 120) },
+          result: { ok: false, status: "failed", error: msg },
+        });
+      }
       return {
         ok: false,
         status: "failed",
