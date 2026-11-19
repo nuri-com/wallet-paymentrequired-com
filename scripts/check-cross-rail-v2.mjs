@@ -167,6 +167,9 @@ function encryptGrant({ prfBytes, sessionId, replyPubkey, index = 0, policy }) {
   const scriptMatch = homeHtml.match(/<script>([\s\S]*?)<\/script>/);
   assert.ok(scriptMatch, "homepage must include inline setup widget script");
   new Function(scriptMatch[1]); // verify valid JS syntax offline
+  assert.ok(scriptMatch[1].includes('to: "https://mail.paymentrequired.com/v1/create_inbox"'), "test payment must pass to:");
+  assert.ok(!scriptMatch[1].includes('target: "https://mail.paymentrequired.com'), "test payment must not pass unknown field target:");
+  assert.ok(scriptMatch[1].includes("body: { request_id: reqId }"), "test payment must pass mail request_id body");
   assert.ok(walletLlmsTxt("https://nuriwallet.com").split("\n").length <= 40);
   assert.ok(walletSkillMd("https://nuriwallet.com").includes("mcp_endpoint: https://nuriwallet.com/mcp"));
 }

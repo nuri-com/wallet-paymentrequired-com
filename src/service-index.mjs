@@ -840,15 +840,22 @@ a{color:var(--blue)}
     el.testPayResult.textContent = "";
     el.testPayStatus.textContent = "Paying $0.01 USDC to mail.paymentrequired.com…";
     try {
+      const reqId = "test-inbox-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 6);
       const data = await callWallet({
         action: "pay",
         wallet_key: connected.wallet_key,
-        target: "https://mail.paymentrequired.com/v1/create_inbox",
+        to: "https://mail.paymentrequired.com/v1/create_inbox",
         method: "POST",
+        body: { request_id: reqId },
+        max_amount: "0.05",
+        request_id: reqId,
       });
-      if (data.status === "paid" || data.paid === true || data.http_status === 200 || data.response) {
-        const body = (data.response && typeof data.response === "object") ? data.response : data;
-        const email = body.address || body.email || (body.data && body.data.address) || "";
+      if (data.ok && (data.status === "done" || data.status === "paid" || data.resource || data.receipt)) {
+        let body = data.resource ?? data.response ?? data;
+        if (typeof body === "string") { try { body = JSON.parse(body); } catch {} }
+        const email = (body && typeof body === "object")
+          ? (body.address || body.email || (body.data && body.data.address) || "")
+          : "";
         el.testPayStatus.textContent = "Paid $0.01!";
         el.testPayResult.textContent = email
           ? "First payment succeeded! Live agent inbox created: " + email
@@ -857,7 +864,7 @@ a{color:var(--blue)}
         refreshBalance(true);
       } else {
         el.testPayStatus.textContent = "";
-        showError(data.message || data.error || "Test payment did not complete. Make sure your wallet has at least $0.02 USDC or ~100 sats.");
+        showError(data.error || data.message || "Test payment did not complete. Make sure your wallet has at least $0.02 USDC or ~100 sats.");
       }
     } catch (err) {
       el.testPayStatus.textContent = "";
