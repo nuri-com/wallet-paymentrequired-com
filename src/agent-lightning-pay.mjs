@@ -221,10 +221,56 @@ export function parseLightningMppChallenges(headers) {
   return out;
 }
 
+let cachedBtcUsd = { rate: null, at: 0 };
+
+export async function defaultGetBtcUsdRate(fetchImpl = fetch) {
+  const now = Date.now();
+  if (cachedBtcUsd.rate && now - cachedBtcUsd.at < 60_000) {
+    return cachedBtcUsd.rate;
+  }
+  try {
+    const res = await fetchImpl("https://api.coinbase.com/v2/prices/BTC-USD/spot", {
+      signal: AbortSignal.timeout(3000),
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) return cachedBtcUsd.rate;
+    const json = await res.json();
+    const rate = Number(json?.data?.amount);
+    if (Number.isFinite(rate) && rate > 1000) {
+      cachedBtcUsd = { rate, at: now };
+      return rate;
+    }
+  } catch {
+    // Fall back to cached rate or conservative bound.
+  }
+  return cachedBtcUsd.rate;
+}
+
+export function usdUnitsToMaxSats(maxAmountUnits, btcUsd) {
+  // Conservative upper BTC/USD bound ($150k) if spot price is unavailable so a USD cap is never loosened.
+  const rate = Number.isFinite(btcUsd) && btcUsd > 1000 ? btcUsd : 150_000;
+  const usd = Number(maxAmountUnits) / 1e6;
+  return BigInt(Math.max(0, Math.floor((usd / rate) * 1e8)));
+}
+
+export function satsToMaxUsdUnits(maxSats, btcUsd) {
+  // Conservative lower BTC/USD bound ($30k) if spot price is unavailable so a sats cap is never loosened.
+  const rate = Number.isFinite(btcUsd) && btcUsd > 1000 ? btcUsd : 30_000;
+  const btc = Number(maxSats) / 1e8;
+  return BigInt(Math.max(0, Math.floor(btc * rate * 1e6)));
+}
+
 /**
  * Detect which 402 payment protocol(s) a merchant response offers.
  */
-export function classifyHttp402Response({ headers, bodyText = "", prefer, decodeBolt11, balances = null }) {
+export function classifyHttp402Response({
+  headers,
+  bodyText = "",
+  prefer,
+  decodeBolt11,
+  balances = null,
+  capHint = null,
+}) {
   const candidates = [];
 
   const l402 = parseL402Challenge(headers);
@@ -338,17 +384,25 @@ export function classifyHttp402Response({ headers, bodyText = "", prefer, decode
   }
 
   // Dual-rail endpoint with no explicit `prefer`: pick whichever rail already holds
-  // sufficient native balance so we avoid unnecessary cross-rail swap fees.
+  // sufficient native balance so we avoid unnecessary cross-rail swap fees. If both
+  // rails are funded and caller passed a currency-specific cap (`max_amount` -> usdc,
+  // `max_sats` -> lightning), honor that cap hint.
   if (balances && candidates.length > 1) {
     const sats = BigInt(balances.sats ?? 0n);
     const usdcUnits = BigInt(balances.usdcUnits ?? 0n);
-    const funded = candidates.find((c) => {
+    const funded = candidates.filter((c) => {
       if (c.rail === "lightning") {
         return c.amountSats !== null && sats >= BigInt(c.amountSats);
       }
       return c.amountUnits !== undefined && usdcUnits >= BigInt(c.amountUnits);
     });
-    if (funded) return funded;
+    if (funded.length > 0) {
+      if (capHint) {
+        const hinted = funded.find((c) => c.rail === capHint);
+        if (hinted) return hinted;
+      }
+      return funded[0];
+    }
   }
 
   return candidates[0];
@@ -359,6 +413,7 @@ export function createPrfHttp402Payer({
   arkadeRuntime,
   merchantFetch = defaultPinnedMerchantFetch,
   ensureRailFunded = null,
+  getBtcUsdRate = defaultGetBtcUsdRate,
 } = {}) {
   async function payHttpResource({
     walletRecord,
@@ -398,15 +453,51 @@ export function createPrfHttp402Payer({
       };
     }
 
+    const capHint =
+      maxAmountUnits !== undefined && maxAmountUnits !== null && (maxSats === undefined || maxSats === null)
+        ? "usdc"
+        : maxSats !== undefined && maxSats !== null && (maxAmountUnits === undefined || maxAmountUnits === null)
+          ? "lightning"
+          : null;
+
     const selected = classifyHttp402Response({
       headers: first.headers,
       bodyText,
       prefer,
       decodeBolt11: arkadeRuntime?.decodeBolt11,
       balances: prefBalances,
+      capHint,
     });
     if (!selected) {
       throw new Error("no_payable_402_challenge");
+    }
+
+    const needsCrossCap =
+      (selected.rail === "lightning" && maxAmountUnits !== undefined && maxAmountUnits !== null) ||
+      (selected.rail === "usdc" && maxSats !== undefined && maxSats !== null);
+    const btcUsd = needsCrossCap ? await getBtcUsdRate().catch(() => null) : null;
+
+    function isLightningOverCap(amountSats) {
+      if (amountSats === null || amountSats === undefined) return false;
+      if (maxSats !== undefined && maxSats !== null && BigInt(amountSats) > BigInt(maxSats)) {
+        return true;
+      }
+      if (maxAmountUnits !== undefined && maxAmountUnits !== null) {
+        const maxSatsFromUsd = usdUnitsToMaxSats(maxAmountUnits, btcUsd);
+        if (BigInt(amountSats) > maxSatsFromUsd) return true;
+      }
+      return false;
+    }
+
+    function isUsdcOverCap(amountUnits) {
+      if (maxAmountUnits !== undefined && maxAmountUnits !== null && BigInt(amountUnits) > BigInt(maxAmountUnits)) {
+        return true;
+      }
+      if (maxSats !== undefined && maxSats !== null) {
+        const maxUnitsFromSats = satsToMaxUsdUnits(maxSats, btcUsd);
+        if (BigInt(amountUnits) > maxUnitsFromSats) return true;
+      }
+      return false;
     }
 
     if (dryRun) {
@@ -421,11 +512,7 @@ export function createPrfHttp402Payer({
             (await safeRuntime.readUsdcBalanceUnits(walletRecord.safeAddress).catch(() => 0n));
           if (usdcBal > 0n) crossRail = true;
         }
-        const overCap =
-          maxSats !== undefined &&
-          maxSats !== null &&
-          selected.amountSats !== null &&
-          BigInt(selected.amountSats) > BigInt(maxSats);
+        const overCap = isLightningOverCap(selected.amountSats);
         return {
           status: "done",
           dry_run: true,
@@ -458,10 +545,7 @@ export function createPrfHttp402Payer({
           (await arkadeRuntime.readBalance(walletRecord).then((b) => b.sats).catch(() => 0n));
         if (arkBal > 0n) crossRail = true;
       }
-      const overCap =
-        maxAmountUnits !== undefined &&
-        maxAmountUnits !== null &&
-        BigInt(selected.amountUnits) > BigInt(maxAmountUnits);
+      const overCap = isUsdcOverCap(selected.amountUnits);
       const q = selected.kind === "x402" ? quoteOffer(selected.offer) : quoteMppOffer(selected.offer);
       return {
         status: "done",
@@ -479,16 +563,12 @@ export function createPrfHttp402Payer({
 
     if (selected.rail === "lightning") {
       if (!arkadeRuntime) throw new Error("arkade_runtime_unavailable");
-      if (
-        maxSats !== undefined &&
-        maxSats !== null &&
-        selected.amountSats !== null &&
-        BigInt(selected.amountSats) > BigInt(maxSats)
-      ) {
+      if (isLightningOverCap(selected.amountSats)) {
         const err = new Error("invoice_exceeds_max_sats");
         err.code = "over_max_amount";
         err.invoiceSats = selected.amountSats;
-        err.maxSats = Number(maxSats);
+        if (maxSats !== undefined && maxSats !== null) err.maxSats = Number(maxSats);
+        if (maxAmountUnits !== undefined && maxAmountUnits !== null) err.maxUnits = String(maxAmountUnits);
         throw err;
       }
 
@@ -564,15 +644,12 @@ export function createPrfHttp402Payer({
 
     // EVM Base USDC rail (`x402` or `mpp-evm`)
     if (!safeRuntime) throw new Error("safe_runtime_unavailable");
-    if (
-      maxAmountUnits !== undefined &&
-      maxAmountUnits !== null &&
-      BigInt(selected.amountUnits) > BigInt(maxAmountUnits)
-    ) {
+    if (isUsdcOverCap(selected.amountUnits)) {
       const err = new Error("invoice_exceeds_max_amount");
       err.code = "over_max_amount";
       err.invoiceUnits = selected.amountUnits;
-      err.maxUnits = String(maxAmountUnits);
+      if (maxAmountUnits !== undefined && maxAmountUnits !== null) err.maxUnits = String(maxAmountUnits);
+      if (maxSats !== undefined && maxSats !== null) err.maxSats = Number(maxSats);
       throw err;
     }
 
