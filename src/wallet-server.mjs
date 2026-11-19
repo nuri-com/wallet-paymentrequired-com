@@ -205,6 +205,16 @@ const server = http.createServer(async (req, res) => {
       const origin = resolveWalletOrigin(req);
       return writeText(req, res, 200, OPENAPI_BY_ORIGIN.get(origin) || JSON.stringify(walletOpenApiJson(origin), null, 2), "application/json; charset=utf-8");
     }
+    if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/robots.txt") {
+      const origin = resolveWalletOrigin(req);
+      return writeText(req, res, 200, `User-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml\n`, "text/plain; charset=utf-8");
+    }
+    if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/sitemap.xml") {
+      const origin = resolveWalletOrigin(req);
+      const urls = ["/", "/llms.txt", "/skill.md", "/openapi.json"]
+        .map((p) => `  <url><loc>${origin}${p}</loc></url>`).join("\n");
+      return writeText(req, res, 200, `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`, "application/xml; charset=utf-8");
+    }
     if (REST_ACTION_ROUTES.has(url.pathname)) {
       return await handleRestWallet(req, res, REST_ACTION_ROUTES.get(url.pathname));
     }
@@ -291,8 +301,17 @@ server.listen(PORT, HOST, () => {
 
 async function handleRestWallet(req, res, fixedAction) {
   const reqOrigin = resolveWalletOrigin(req);
+  if (req.method === "GET" || req.method === "HEAD") {
+    return writeText(
+      req,
+      res,
+      200,
+      `# Plain HTTP REST Wallet Endpoint (${reqOrigin}${req.url || "/v1/wallet"})\n\nSend POST JSON here (no OAuth, no MCP required). Full instructions:\n\n${LLMS_BY_ORIGIN.get(reqOrigin) || walletLlmsTxt(reqOrigin)}`,
+      "text/plain; charset=utf-8",
+    );
+  }
   if (req.method !== "POST") {
-    res.setHeader("Allow", "POST, OPTIONS");
+    res.setHeader("Allow", "GET, POST, OPTIONS");
     return writeJson(req, res, 405, { ok: false, error: "method_not_allowed", hint: `POST JSON to this URL. Docs: ${reqOrigin}/llms.txt | OpenAPI: ${reqOrigin}/openapi.json` });
   }
   const body = await readJson(req);
@@ -327,8 +346,25 @@ async function handleRestWallet(req, res, fixedAction) {
 
 async function handleMcp(req, res) {
   const reqOrigin = resolveWalletOrigin(req);
+  if (req.method === "GET" || req.method === "HEAD") {
+    const accept = String(req.headers.accept || "").toLowerCase();
+    // Streamable HTTP MCP clients probing GET SSE stream expect 405 when SSE is unsupported.
+    // Web fetchers / LLMs / browsers (Accept: */*, text/html, text/plain) get 200 + full setup instructions.
+    const wantsSseOnly = accept.includes("text/event-stream") && !accept.includes("text/html") && !accept.includes("*/*");
+    if (wantsSseOnly) {
+      res.setHeader("Allow", "POST, OPTIONS");
+      return writeJson(req, res, 405, { ok: false, error: "method_not_allowed", hint: `POST JSON-RPC to this URL. Start: ${reqOrigin}/llms.txt` });
+    }
+    return writeText(
+      req,
+      res,
+      200,
+      `# Live Remote MCP Server — ${reqOrigin}/mcp\n\nThis URL is a real, live, authless Streamable HTTP MCP endpoint (POST JSON-RPC, Auth: None, no OAuth).\nTo connect in Claude or ChatGPT: Settings -> Connectors / Apps -> Add Custom Connector -> URL: ${reqOrigin}/mcp (Auth: None).\n\n${LLMS_BY_ORIGIN.get(reqOrigin) || walletLlmsTxt(reqOrigin)}`,
+      "text/plain; charset=utf-8",
+    );
+  }
   if (req.method !== "POST") {
-    res.setHeader("Allow", "POST, OPTIONS");
+    res.setHeader("Allow", "GET, POST, OPTIONS");
     return writeJson(req, res, 405, { ok: false, error: "method_not_allowed", hint: `POST JSON-RPC to this URL. Start: ${reqOrigin}/llms.txt` });
   }
   const message = await readJson(req);

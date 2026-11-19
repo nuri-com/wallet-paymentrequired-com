@@ -877,18 +877,37 @@ try {
       assert.ok(spec.paths["/v1/history"]?.post);
       assert.ok(!openapi.body.includes("evil.example.com"));
 
+      // Plain web/LLM GET /mcp returns 200 + live setup instructions so web fetchers never treat it as dead
       const mcpGet = await httpReq("/mcp", { headers: hdrs });
-      assert.equal(mcpGet.status, 405);
-      const mcpJson = JSON.parse(mcpGet.body);
+      assert.equal(mcpGet.status, 200);
+      assert.match(mcpGet.headers["content-type"], /text\/plain/);
+      assert.ok(mcpGet.body.includes(`Live Remote MCP Server — ${origin}/mcp`));
+      assert.ok(mcpGet.body.includes("Settings -> Connectors"));
+      assert.ok(mcpGet.body.includes(`# Agent Wallet (${expectedHost})`));
+
+      // Streamable HTTP MCP SSE probe (Accept: text/event-stream) still receives 405 per MCP spec
+      const mcpSse = await httpReq("/mcp", { headers: { ...hdrs, Accept: "text/event-stream" } });
+      assert.equal(mcpSse.status, 405);
+      const mcpJson = JSON.parse(mcpSse.body);
       assert.equal(mcpJson.hint, `POST JSON-RPC to this URL. Start: ${origin}/llms.txt`);
 
       const restGet = await httpReq("/v1/wallet", { headers: hdrs });
-      assert.equal(restGet.status, 405);
-      const restGetJson = JSON.parse(restGet.body);
-      assert.ok(restGetJson.hint.includes(`${origin}/openapi.json`));
+      assert.equal(restGet.status, 200);
+      assert.match(restGet.headers["content-type"], /text\/plain/);
+      assert.ok(restGet.body.includes(`${origin}/v1/wallet`));
+      assert.ok(restGet.body.includes(`# Agent Wallet (${expectedHost})`));
+
+      const robots = await httpReq("/robots.txt", { headers: hdrs });
+      assert.equal(robots.status, 200);
+      assert.ok(robots.body.includes(`Sitemap: ${origin}/sitemap.xml`));
+
+      const sitemap = await httpReq("/sitemap.xml", { headers: hdrs });
+      assert.equal(sitemap.status, 200);
+      assert.ok(sitemap.body.includes(`<loc>${origin}/</loc>`));
+      assert.ok(sitemap.body.includes(`<loc>${origin}/llms.txt</loc>`));
     }
 
-    for (const p of ["/", "/llms.txt", "/skill.md", "/openapi.json"]) {
+    for (const p of ["/", "/llms.txt", "/skill.md", "/openapi.json", "/robots.txt", "/sitemap.xml", "/mcp", "/v1/wallet"]) {
       const headRes = await httpReq(p, { method: "HEAD", headers: { Host: "wallet.nuri.com" } });
       assert.equal(headRes.status, 200);
       assert.equal(headRes.body, "");
