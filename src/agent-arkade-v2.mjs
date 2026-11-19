@@ -712,7 +712,7 @@ export function createAgentArkadeRuntime({
     walletRecord,
     agentBtcPrivHex,
     amountSats,
-    rfqId = randomBytes(16).toString("hex"),
+    rfqId = randomBytes(32).toString("hex"),
   }) {
     const sats = Number(amountSats);
     if (!Number.isSafeInteger(sats) || sats <= 0) {
@@ -870,7 +870,7 @@ export function createAgentArkadeRuntime({
     }
 
     const derivedWallet = await deriveWalletScript(walletRecord);
-    const rfqId = randomBytes(16).toString("hex");
+    const rfqId = randomBytes(32).toString("hex");
     const senderPubkey = hexToBytes(walletRecord.aggregatedBtcXonlyHex);
 
     const quote = await withRfqTransport(derivedWallet.info, (transport) =>
