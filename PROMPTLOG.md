@@ -1,6 +1,15 @@
 # Prompt log
 
 
+## 2026-11-20 — Emin; recorded by Hermes
+
+- "I need to get support for MPP tempo. For some reason our wallet can't do it." → Tempo MPP
+  from the PRF Safe (PR #23): found the Base-only offer filter, chain table and hardcoded
+  chainId; verified the Gnosis Safe singleton/factory live on both Tempo chains.
+- "run the LNURL for the agent wallet and we use the domain nuriwallet.com" → nuriwallet.com
+  LNURL handles (PR #24 + #25): read agent-arkade-v2's RFQ receive path first ("it always
+  ends up inside Arkade"), registered `goose@nuriwallet.com` live, minted a real invoice.
+
 ## 2026-10-17 — Emin; recorded by Hermes
 
 - "tldr explain what confused the model, then fix it, then test it again, is it clear that there is a split between banking, wallet, signer etc.?"

@@ -5,6 +5,19 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — Tempo MPP + nuriwallet.com LNURL (2026-11-20)
+
+- Tempo-chain MPP offers (4217/42431) are payable from the PRF Safe: same counterfactual
+  Safe address on Tempo, relayer pays Safe-exec/deploy fees in the token itself, Agent EOA
+  pays `transferWithMemo` from a hopped fee reserve (`0e538e2`, PR #23, live 2026-11-20).
+- `username@nuriwallet.com` LNURL-pay Lightning addresses for PRF wallets: handle registry
+  with server-sealable receive root, public `/.well-known/lnurlp/:u` + `/lnurl/callback/:u`
+  (every wallet origin, callback pinned to `https://nuriwallet.com/...`), registration via
+  `wallet receive lnurl_username=…`, unattended claim sweeper into the 2-of-2 Arkade VTXO
+  (`238810d`, PR #24 + sweeper seconds-vs-ms fix PR #25, live 2026-11-20:
+  `goose@nuriwallet.com` minted a real 5000-sats BOLT11 via the RFQ solver, payment-hash
+  claimability verified).
+
 ## Unreleased — wallet ask with session (2026-10-18)
 
 - wallet ask accepts the person's session as well as a wallet_key, like pay does (live 2026-10-18: a connected person got 'Ask needs wallet_key').
