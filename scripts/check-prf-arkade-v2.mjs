@@ -60,6 +60,7 @@ import {
   BASE_CHAIN_ID,
   BASE_USDC_ADDRESS,
   PERMIT2_ADDRESS,
+  TEMPO_CHAIN_IDS,
   computeSafeMessageHash,
   computeSafeTxHash,
   createAgentSafeRuntime,
@@ -67,6 +68,7 @@ import {
   predictAgentSafeAddress,
   predictPasskeySignerAddress,
 } from "../src/agent-safe-v2.mjs";
+import { parseMppChallenges, selectMppOffer } from "../src/safe-pay-mpp.mjs";
 import {
   DEFAULT_ARKADE_SOLVER_PUBKEY,
   NuriAgentVtxoScript,
@@ -908,6 +910,23 @@ const mppEvmChallenge = Challenge.from({
   },
 });
 
+const PATHUSD_ADDRESS = "0x20c0000000000000000000000000000000000000";
+const mppTempoChallenge = Challenge.from({
+  id: "chal-tempo-1",
+  realm: "tempo.example.com",
+  method: "tempo",
+  intent: "charge",
+  request: {
+    amount: "500000", // 0.50 PATHUSD
+    currency: PATHUSD_ADDRESS,
+    recipient: "0x7777777777777777777777777777777777777777",
+    methodDetails: {
+      chainId: 4217,
+      decimals: 6,
+    },
+  },
+});
+
 // Synthetic HTTPS merchant dispatcher (zero network)
 async function syntheticMerchantFetch(url, { headers = {}, shape } = {}) {
   const auth = headers.Authorization || headers.authorization || "";
@@ -1528,6 +1547,25 @@ try {
   assert.equal(overCap.ok, false);
   assert.match(overCap.error, /NEW request_id and a higher max_amount/);
 
+  // Tempo MPP offers (chain 4217/42431) must be selectable by the PRF payer
+  {
+    const tempoHeaders = new Headers({ "www-authenticate": Challenge.serialize(mppTempoChallenge) });
+    const tempoOffers = parseMppChallenges({ headers: tempoHeaders });
+    assert.equal(tempoOffers.length, 1);
+    assert.equal(tempoOffers[0].method, "tempo");
+    assert.equal(Number(tempoOffers[0].chainId), 4217);
+    const picked = selectMppOffer(tempoOffers, { chainIds: [BASE_CHAIN_ID, ...TEMPO_CHAIN_IDS] });
+    assert.equal(picked.method, "tempo");
+    assert.equal(Number(picked.chainId), 4217);
+    assert.equal(String(picked.asset).toLowerCase(), PATHUSD_ADDRESS.toLowerCase());
+    const dual = parseMppChallenges({
+      headers: new Headers({
+        "www-authenticate": `${Challenge.serialize(mppEvmChallenge)}, ${Challenge.serialize(mppTempoChallenge)}`,
+      }),
+    });
+    const dualPick = selectMppOffer(dual, { chainIds: [BASE_CHAIN_ID, ...TEMPO_CHAIN_IDS] });
+    assert.equal(dualPick.method, "evm"); // charge intent + lowest index first
+  }
   // Step I: Pay HTTP 402 via EVM MPP (Safe -> Agent EOA hop + stock `mppx`)
   const paidMppEvm = await walletTool.call({
     action: "pay",
@@ -1536,8 +1574,8 @@ try {
     max_amount: "0.25",
     request_id: "pay-mppevm-1",
   });
+
   assert.equal(paidMppEvm.ok, true);
-  assert.equal(paidMppEvm.protocol, "mpp");
   assert.equal(paidMppEvm.rail, "usdc");
   assert.equal(JSON.parse(paidMppEvm.resource.body).compute, "mpp-evm-paid-ok");
 

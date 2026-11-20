@@ -17,13 +17,16 @@ import { BlockList, isIP } from "node:net";
 import { decodePaymentResponseHeader } from "@x402/core/http";
 import { Challenge, Credential, Receipt } from "mppx";
 import { privateKeyToAccount } from "viem/accounts";
-import { BASE_CHAIN_ID, BASE_USDC_ADDRESS } from "./agent-safe-v2.mjs";
+import { BASE_CHAIN_ID, BASE_USDC_ADDRESS, TEMPO_CHAIN_IDS } from "./agent-safe-v2.mjs";
 import { MERCHANT_HEADERS, requestShape } from "./agent-kernel-runtime.mjs";
 import { parseChallenge, payWithSafe, quoteOffer, selectOffer } from "./safe-pay.mjs";
 import { parseMppChallenges, payMppCharge, quoteMppOffer, selectMppOffer } from "./safe-pay-mpp.mjs";
 import { parseSolanaChallenge, payWithSolana, quoteSolanaOffer, readSolanaUsdcBalance, solanaSignerFromAgentKey } from "./safe-pay-solana.mjs";
 
 const denied = new BlockList();
+// Tempo has no gas coin: the Agent EOA pays its transferWithMemo fee in the token
+// itself, so a Tempo hop carries amount + this reserve (leftover stays on the EOA).
+const TEMPO_HOP_FEE_RESERVE_UNITS = 2_000_000n;
 for (const [ip, bits] of [
   ["0.0.0.0", 8],
   ["10.0.0.0", 8],
@@ -356,7 +359,7 @@ export function classifyHttp402Response({
         prefer && ["mpp", "mpp:evm", "charge", "session"].includes(String(prefer))
           ? prefer
           : undefined;
-      const offer = selectMppOffer(evmOffers, { chainIds: [BASE_CHAIN_ID], prefer: mppPrefer });
+      const offer = selectMppOffer(evmOffers, { chainIds: [BASE_CHAIN_ID, ...TEMPO_CHAIN_IDS], prefer: mppPrefer });
       candidates.push({
         kind: "mpp-evm",
         rail: "usdc",
@@ -364,7 +367,7 @@ export function classifyHttp402Response({
         amountUnits: offer.amount,
       });
     } catch {
-      // Ignore if MPP challenges are non-Base or Lightning-only.
+      // Ignore if MPP challenges are for unsupported chains.
     }
   }
 
@@ -401,6 +404,11 @@ export function classifyHttp402Response({
     const funded = candidates.filter((c) => {
       if (c.rail === "lightning") {
         return c.amountSats !== null && sats >= BigInt(c.amountSats);
+      }
+      // A Tempo MPP offer is paid from the Safe's token balance on Tempo, which the
+      // caller's Base-USDC balance snapshot does not know: never exclude it here.
+      if (c.kind === "mpp-evm" && TEMPO_CHAIN_IDS.includes(Number(c.offer?.chainId))) {
+        return true;
       }
       const available = c.rail === "solana-usdc" ? BigInt(balances.solanaUsdcUnits ?? 0n) : usdcUnits;
       return c.amountUnits !== undefined && available >= BigInt(c.amountUnits);
@@ -787,6 +795,8 @@ export function createPrfHttp402Payer({
         ? secrets.agentEthPrivHex
         : `0x${secrets.agentEthPrivHex}`,
     );
+    const offerChainId = Number(selected.offer.chainId);
+    const offerIsTempo = TEMPO_CHAIN_IDS.includes(offerChainId);
     let hopTxHash = null;
     let secondRaw = null;
     const { response: second, receipt } = await payMppCharge({
@@ -796,17 +806,20 @@ export function createPrfHttp402Payer({
         selected.offer.asset?.toLowerCase() === BASE_USDC_ADDRESS.toLowerCase()
           ? { name: "USD Coin", version: "2" }
           : undefined,
+      feeReserve: offerIsTempo ? TEMPO_HOP_FEE_RESERVE_UNITS : 0n,
       hop: async (_token, amount) => {
-        const hopped = await safeRuntime.transferUsdc({
+        const hopped = await safeRuntime.transferToken({
           walletRecord: safeWalletRow,
           agentEthPrivateKeyHex: secrets.agentEthPrivHex,
           to: agentAccount.address,
           amountUnits: amount,
           opId: `${opId}:mpp-hop`,
+          chainId: offerChainId,
+          token: selected.offer.asset,
         });
         hopTxHash = hopped.txHash;
       },
-      getClient: () => safeRuntime.publicClient,
+      getClient: (chainId) => safeRuntime.clientForChain(chainId),
       fetchPaid: async (credentialHeader) => {
         const res = await merchantFetch(url, {
           headers: credentialHeader ? { Authorization: credentialHeader } : {},
