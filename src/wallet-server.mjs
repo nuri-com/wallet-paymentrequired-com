@@ -115,6 +115,10 @@ const walletLocal = createMcpWalletTool({ accountFlow: mcpAccount, chainId: aaCo
 const walletTool = { ...walletLocal, call: (args, ctx) => walletCallContext.run(typeof args?.session === "string" ? args.session : null, () => walletLocal.call(args, ctx)) };
 process.once("exit", () => { walletTool?.close?.(); bankTool?.close?.(); });
 
+// Unattended LNURL claim sweep: pending username@nuriwallet.com receives are
+// claimed into their wallet's Arkade VTXOs without any Passkey session.
+walletLocal.startLnurlAutoClaim?.();
+
 // Tool prices: the one tool_charges journal lives here, paid by the agent Safe (source server.mjs:221).
 const toolCharges = createToolCharges({ env: process.env, path: STATE_DB_PATH, chainId: aaConfig.chainId, payWithSafe: walletToolSafePayer(walletLocal) });
 process.once("exit", () => toolCharges.close());
@@ -228,6 +232,30 @@ const server = http.createServer(async (req, res) => {
       const urls = ["/", "/llms.txt", "/skill.md", "/openapi.json"]
         .map((p) => `  <url><loc>${origin}${p}</loc></url>`).join("\n");
       return writeText(req, res, 200, `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`, "application/xml; charset=utf-8");
+    }
+    // LNURL-pay for username@nuriwallet.com: public, no auth (source of truth is
+    // the PRF handle registry; payments settle as Arkade VTXOs via the RFQ solver).
+    {
+      const lnurlMatch = /^\/(?:\.well-known\/lnurlp|lnurl\/callback)\/([A-Za-z0-9._-]{1,64})$/.exec(url.pathname);
+      if (req.method === "GET" && lnurlMatch) {
+        const isCallback = url.pathname.startsWith("/lnurl/callback/");
+        const result = await walletTool.call({
+          action: "lnurl",
+          lnurl_username: lnurlMatch[1],
+          ...(isCallback ? { lnurl_op: "callback", amount_msat: Number(url.searchParams.get("amount")) } : {}),
+        });
+        if (!result?.ok) {
+          const status = Number(result?.status) || (String(result?.error) === "lnurl_handle_unknown" ? 404 : 400);
+          return writeJson(req, res, status, { status: "ERROR", reason: String(result?.error || "lnurl_failed") });
+        }
+        if (isCallback) {
+          if (typeof result.pr !== "string" || !result.pr) {
+            return writeJson(req, res, 502, { status: "ERROR", reason: "lnurl_invoice_failed" });
+          }
+          return writeJson(req, res, 200, { status: "OK", pr: result.pr, routes: [] });
+        }
+        return writeJson(req, res, 200, result.payRequest);
+      }
     }
     if (REST_ACTION_ROUTES.has(url.pathname)) {
       return await handleRestWallet(req, res, REST_ACTION_ROUTES.get(url.pathname));

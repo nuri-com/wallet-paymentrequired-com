@@ -151,12 +151,12 @@ function encryptGrant({ prfBytes, sessionId, replyPubkey, index = 0, policy }) {
   assert.ok(walletInst.includes("approval_url"));
   assert.ok(!walletInst.includes("create_url"));
   assert.ok(walletInst.includes("NEW request_id and a higher max_amount"));
-  assert.deepEqual(WALLET_TOOL.inputSchema.properties.action.enum, ["balance", "receive", "pay", "history"]);
+  assert.deepEqual(WALLET_TOOL.inputSchema.properties.action.enum, ["balance", "receive", "pay", "history", "lnurl"]);
   const { outputSchema: _omitOut, ...wireWalletTool } = WALLET_TOOL;
   const approxStaticTokens = Math.ceil((walletInst.length + JSON.stringify(wireWalletTool).length) / 4);
   assert.ok(
-    approxStaticTokens / 64000 <= 0.0235,
-    `static MCP footprint ${((approxStaticTokens / 64000) * 100).toFixed(3)}% exceeds 2.35% of 64k`,
+    approxStaticTokens / 64000 <= 0.0245,
+    `static MCP footprint ${((approxStaticTokens / 64000) * 100).toFixed(3)}% exceeds 2.45% of 64k`,
   );
 
   // Host-aware origin resolution & inline script syntax

@@ -903,10 +903,150 @@ export function createPrfWalletCoordinator({
     });
   }
 
+  // Public LNURL-pay surface for username@nuriwallet.com (no wallet_key needed):
+  // `serve` builds the payRequest, `callback` mints a BOLT11 via the Arkade RFQ
+  // solver using the handle's server-sealable receive root. Paid VHTLCs are
+  // swept into the wallet's 2-of-2 Arkade VTXO by the unattended claim sweeper.
+  const LNURL_PUBLIC_BASE = (process.env.LNURL_PUBLIC_BASE || "https://nuriwallet.com").replace(/\/+$/, "");
+  const LNURL_MIN_SENDABLE_MSAT = 340000;
+  const LNURL_MAX_SENDABLE_MSAT = 4000000000;
+  const LNURL_CALLBACK_PATH = "/lnurl/callback/";
+
+  function lnurlPayRequest(handle) {
+    const username = handle.username;
+    const metadata = JSON.stringify([
+      ["text/plain", `Pay ${username}@nuriwallet.com`],
+      ["text/identifier", `${username}@nuriwallet.com`],
+    ]);
+    return {
+      status: "OK",
+      tag: "payRequest",
+      callback: `${LNURL_PUBLIC_BASE}${LNURL_CALLBACK_PATH}${encodeURIComponent(username)}`,
+      minSendable: LNURL_MIN_SENDABLE_MSAT,
+      maxSendable: LNURL_MAX_SENDABLE_MSAT,
+      metadata,
+      commentAllowed: 0,
+    };
+  }
+
+  async function handleLnurl(args) {
+    const db = ensureStore();
+    const username = String(args?.lnurl_username || "").trim().toLowerCase();
+    if (!username) return { ok: false, error: "lnurl_username required" };
+    const handle = db.getLnurlHandle(username);
+    if (!handle) return { ok: false, error: "lnurl_handle_unknown", status: 404 };
+
+    if (String(args?.lnurl_op || "serve") !== "callback") {
+      return { ok: true, op: "serve", username, payRequest: lnurlPayRequest(handle) };
+    }
+
+    const amountMsat = Number(args.amount_msat);
+    if (!Number.isSafeInteger(amountMsat) || amountMsat <= 0 || amountMsat % 1000 !== 0) {
+      return { ok: false, error: "amount_msat must be a positive whole number of millisatoshis", status: 400 };
+    }
+    if (amountMsat < LNURL_MIN_SENDABLE_MSAT || amountMsat > LNURL_MAX_SENDABLE_MSAT) {
+      return { ok: false, error: `amount_msat out of range (${LNURL_MIN_SENDABLE_MSAT}-${LNURL_MAX_SENDABLE_MSAT})`, status: 400 };
+    }
+    const wallet = db.getWalletById(handle.walletId);
+    if (!wallet) return { ok: false, error: "lnurl_wallet_missing", status: 404 };
+    const rootHex = db.openLnurlReceiveSecret(handle);
+    const amountSats = amountMsat / 1000;
+
+    const created = await ensureArkade().createLightningReceive({
+      walletRecord: wallet,
+      agentBtcPrivHex: rootHex,
+      amountSats,
+    });
+    const requestId = `lnurlp:${username}:${created.rfqId.slice(0, 16)}`;
+    db.saveLightningReceive({
+      rfqId: created.rfqId,
+      walletId: wallet.walletId,
+      requestId,
+      paymentHash: created.paymentHash,
+      invoice: created.invoice,
+      payAmountSats: created.payAmountSats,
+      expectedAmountSats: created.expectedAmountSats,
+      feeSats: created.feeSats,
+      expiresAt: created.expiresAt,
+      lockupAddress: created.lockupAddress,
+      swapPkScriptHex: created.swapPkScriptHex,
+      payoutAddress: created.payoutAddress,
+      quoteJson: created.quoteJson,
+    });
+    return {
+      ok: true,
+      op: "callback",
+      username,
+      pr: created.invoice,
+      payRequest: lnurlPayRequest(handle),
+      amount_sats: created.payAmountSats,
+      expected_sats: created.expectedAmountSats,
+      fee_sats: created.feeSats,
+      expires_at: created.expiresAt,
+      request_id: requestId,
+    };
+  }
+
+  // Unattended claim of LNURL receives: every pending receive created via the
+  // public callback (request_id `lnurlp:<username>:…`) is claimed with the
+  // handle's receive root — no Passkey session required.
+  let lnurlClaimTimer = null;
+  function startLnurlAutoClaim(intervalMs = 60_000) {
+    if (lnurlClaimTimer) return;
+    const tick = async () => {
+      try {
+        const db = ensureStore();
+        const now = Date.now();
+        const rows = db.db
+          .prepare(
+            "SELECT * FROM nuri_prf_lightning_receives WHERE status = 'pending' AND request_id LIKE 'lnurlp:%' AND expires_at > ? ORDER BY created_at ASC LIMIT 20",
+          )
+          .all(now);
+        for (const row of rows) {
+          const username = String(row.request_id || "").split(":")[1];
+          const handle = username ? db.getLnurlHandle(username) : null;
+          if (!handle) continue;
+          const wallet = db.getWalletById(handle.walletId);
+          if (!wallet) continue;
+          const rootHex = db.openLnurlReceiveSecret(handle);
+          await claimAndRecordReceive(wallet, rootHex, db.getLightningReceive(row.rfq_id));
+        }
+      } catch {
+        // Non-fatal: unpaid invoices, operator or solver unreachable.
+      }
+    };
+    lnurlClaimTimer = setInterval(tick, intervalMs);
+    lnurlClaimTimer.unref?.();
+  }
+
   async function handleReceive(args) {
     const db = ensureStore();
     const { wallet, secrets } = db.unlockWalletSecrets(args.wallet_key);
     await sweepPendingReceives(wallet, secrets.agentBtcPrivHex);
+
+    // Register / re-bind a username@nuriwallet.com LNURL handle for this wallet.
+    if (args.lnurl_username) {
+      let handle;
+      try {
+        handle = db.registerLnurlHandle({ username: args.lnurl_username, walletId: wallet.walletId });
+      } catch (error) {
+        if (error?.code === "username_taken" || /username_taken/.test(String(error?.message))) {
+          return { ok: false, status: "failed", error: "That username is already taken. Choose another username." };
+        }
+        if (/username_invalid/.test(String(error?.message))) {
+          return { ok: false, status: "failed", error: "Username must be 2-32 chars: a-z, 0-9, dots, dashes, underscores; start and end with a letter or digit." };
+        }
+        throw error;
+      }
+      return {
+        ok: true,
+        status: "done",
+        rail: "lnurl",
+        lnurl: `${handle.username}@nuriwallet.com`,
+        username: handle.username,
+        next: `Your Lightning address is ${handle.username}@nuriwallet.com. Payers get a BOLT11 invoice; paid sats are claimed into your Arkade wallet automatically.`,
+      };
+    }
 
     const requestedRail = String(
       args.rail || (args.amount_sats !== undefined ? "lightning" : "usdc"),
@@ -2070,6 +2210,8 @@ export function createPrfWalletCoordinator({
     handleReceive,
     handlePay,
     handleHistory,
+    handleLnurl,
+    startLnurlAutoClaim,
     payFeeWithPrfWallet,
     findLatestWalletByMainEoa: (owner) =>
       configured ? ensureStore().findLatestWalletByMainEoa(owner) : null,
