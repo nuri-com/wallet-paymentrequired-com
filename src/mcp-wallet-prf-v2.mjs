@@ -996,7 +996,7 @@ export function createPrfWalletCoordinator({
     const tick = async () => {
       try {
         const db = ensureStore();
-        const now = Date.now();
+        const now = Math.floor(Date.now() / 1000); // expires_at is epoch seconds
         const rows = db.db
           .prepare(
             "SELECT * FROM nuri_prf_lightning_receives WHERE status = 'pending' AND request_id LIKE 'lnurlp:%' AND expires_at > ? ORDER BY created_at ASC LIMIT 20",
