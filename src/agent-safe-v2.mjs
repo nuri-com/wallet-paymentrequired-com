@@ -26,11 +26,17 @@ import {
   toBytes,
   toHex,
 } from "viem";
-import { base } from "viem/chains";
+import { base, tempo, tempoModerato } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
+import { sendTransactionSync } from "viem/actions";
+import { Account as TempoAccount } from "viem/tempo";
 
 export const AGENT_SAFE_VERSION = "nuri-agent-safe-v1";
 export const BASE_CHAIN_ID = 8453;
+// Tempo (MPP native chain, no gas coin: fees are paid in the token itself).
+// The same Gnosis Safe singleton + proxy factory live at the same addresses on
+// both Tempo chains, so the counterfactual Safe keeps its address there too.
+export const TEMPO_CHAIN_IDS = [4217, 42431];
 export const BASE_USDC_ADDRESS = getAddress("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913");
 export const PERMIT2_ADDRESS = getAddress("0x000000000022D473030F116dDEE9F6B43aC78BA3");
 
@@ -243,6 +249,32 @@ export function createAgentSafeRuntime({
   const rpcUrl = env.AGENT_KERNEL_RPC_URL || env.AA_PUBLIC_RPC_URL || "https://mainnet.base.org";
   const pub = publicClient || createPublicClient({ chain: base, transport: http(rpcUrl) });
 
+  const TEMPO_CHAINS = new Map([[4217, tempo], [42431, tempoModerato]]);
+  const tempoClients = new Map();
+  function chainFor(chainId) {
+    const id = Number(chainId);
+    if (id === BASE_CHAIN_ID) return base;
+    const chain = TEMPO_CHAINS.get(id);
+    if (!chain) throw new Error("chain_unsupported_by_safe_runtime");
+    return chain;
+  }
+  // Public client for Base or a Tempo chain (reads are free on both).
+  function clientForChain(chainId) {
+    const id = Number(chainId);
+    if (id === BASE_CHAIN_ID) return pub;
+    if (!tempoClients.has(id)) {
+      const chain = chainFor(id);
+      const url = id === 4217
+        ? env.TEMPO_RPC_URL || chain.rpcUrls.default.http[0]
+        : env.TEMPO_TESTNET_RPC_URL || chain.rpcUrls.default.http[0];
+      tempoClients.set(id, createPublicClient({ chain, transport: http(url) }));
+    }
+    return tempoClients.get(id);
+  }
+  function isTempoChain(chainId) {
+    return TEMPO_CHAIN_IDS.includes(Number(chainId));
+  }
+
   let relayerQueue = Promise.resolve();
   function getRelayerClient() {
     if (walletClient) return walletClient;
@@ -251,6 +283,12 @@ export function createAgentSafeRuntime({
     const account = privateKeyToAccount(pk);
     return createWalletClient({ account, chain: base, transport: http(rpcUrl) });
   }
+  // The same relayer EOA on a Tempo chain: fees are paid in a TIP-20 fee token.
+  function getTempoRelayerAccount() {
+    const pk = loadRelayerPrivateKey(env);
+    if (!pk) throw Object.assign(new Error("operator_balance_insufficient"), { runtimeCode: "operator_balance_insufficient" });
+    return TempoAccount.fromSecp256k1(pk.startsWith("0x") ? pk : `0x${pk}`);
+  }
 
   function withRelayerLock(fn) {
     const next = relayerQueue.then(fn, fn);
@@ -258,14 +296,14 @@ export function createAgentSafeRuntime({
     return next;
   }
 
-  async function isSafeDeployed(safeAddress) {
-    const code = await pub.getCode({ address: getAddress(safeAddress) });
+  async function isSafeDeployed(safeAddress, chainId = BASE_CHAIN_ID) {
+    const code = await clientForChain(chainId).getCode({ address: getAddress(safeAddress) });
     return Boolean(code && code !== "0x" && code.length > 2);
   }
 
-  async function ensureSafeDeployed(walletRecord) {
+  async function ensureSafeDeployed(walletRecord, chainId = BASE_CHAIN_ID) {
     const safeAddress = getAddress(walletRecord.safe_address);
-    if (await isSafeDeployed(safeAddress)) return { deployed: true, txHash: null };
+    if (await isSafeDeployed(safeAddress, chainId)) return { deployed: true, txHash: null };
     const predicted = predictAgentSafeAddress({
       mainEoa: walletRecord.main_eoa,
       passkeySignerAddress: walletRecord.passkey_signer_address,
@@ -278,7 +316,22 @@ export function createAgentSafeRuntime({
       throw new Error("safe_prediction_mismatch");
     }
     return await withRelayerLock(async () => {
-      if (await isSafeDeployed(safeAddress)) return { deployed: true, txHash: null };
+      if (await isSafeDeployed(safeAddress, chainId)) return { deployed: true, txHash: null };
+      if (isTempoChain(chainId)) {
+        const result = await sendTransactionSync(clientForChain(chainId), {
+          account: getTempoRelayerAccount(),
+          to: SAFE_PROXY_FACTORY,
+          gas: 1_500_000n,
+          feeToken: getAddress(feeToken || BASE_USDC_ADDRESS),
+          data: encodeFunctionData({
+            abi: SAFE_FACTORY_ABI,
+            functionName: "createProxyWithNonce",
+            args: [SAFE_L2_SINGLETON, predicted.initializer, predicted.saltNonce],
+          }),
+        });
+        if (result.status !== "success") throw new Error("operator_transaction_reverted");
+        return { deployed: true, txHash: result.transactionHash || result.hash || null };
+      }
       const relayer = getRelayerClient();
       const hash = await relayer.writeContract({
         address: SAFE_PROXY_FACTORY,
@@ -325,16 +378,26 @@ export function createAgentSafeRuntime({
     return coSigned.combined_signatures;
   }
 
-  async function execSafeUsdcCall({ walletRecord, agentEthPrivateKeyHex, data, opId, signal }) {
-    await ensureSafeDeployed(walletRecord);
+  async function execSafeTokenCall({
+    walletRecord,
+    agentEthPrivateKeyHex,
+    data,
+    opId,
+    signal,
+    chainId = BASE_CHAIN_ID,
+    token = BASE_USDC_ADDRESS,
+  }) {
+    const id = Number(chainId);
+    await ensureSafeDeployed(walletRecord, id, token);
     const safeAddress = getAddress(walletRecord.safe_address);
-    const nonce = await pub.readContract({
+    const client = clientForChain(id);
+    const nonce = await client.readContract({
       address: safeAddress,
       abi: SAFE_EXEC_ABI,
       functionName: "nonce",
     });
     const transaction = {
-      to: BASE_USDC_ADDRESS,
+      to: getAddress(token),
       value: 0n,
       data,
       operation: 0,
@@ -345,7 +408,7 @@ export function createAgentSafeRuntime({
       refundReceiver: ZERO_ADDRESS,
       nonce: BigInt(nonce),
     };
-    const safeTxHash = computeSafeTxHash({ chainId: BASE_CHAIN_ID, safeAddress, transaction });
+    const safeTxHash = computeSafeTxHash({ chainId: id, safeAddress, transaction });
     const agentAccount = privateKeyToAccount(
       agentEthPrivateKeyHex.startsWith("0x") ? agentEthPrivateKeyHex : `0x${agentEthPrivateKeyHex}`,
     );
@@ -353,7 +416,7 @@ export function createAgentSafeRuntime({
     const coSigned = await cosignerClient.signSafeTx({
       cred_id_b64u: walletRecord.cred_id_b64u,
       index: walletRecord.slot_index,
-      chain_id: BASE_CHAIN_ID,
+      chain_id: id,
       safe_address: safeAddress,
       transaction,
       agent_signature: agentSignature,
@@ -361,13 +424,40 @@ export function createAgentSafeRuntime({
     }, { signal });
 
     return await withRelayerLock(async () => {
+      const execData = encodeFunctionData({
+        abi: SAFE_EXEC_ABI,
+        functionName: "execTransaction",
+        args: [
+          getAddress(token),
+          0n,
+          data,
+          0,
+          0n,
+          0n,
+          0n,
+          ZERO_ADDRESS,
+          ZERO_ADDRESS,
+          coSigned.combined_signatures,
+        ],
+      });
+      if (isTempoChain(id)) {
+        const result = await sendTransactionSync(client, {
+          account: getTempoRelayerAccount(),
+          to: safeAddress,
+          gas: 300_000n,
+          feeToken: getAddress(token),
+          data: execData,
+        });
+        if (result.status !== "success") throw new Error("operator_transaction_reverted");
+        return { txHash: result.transactionHash || result.hash || null, safeTxHash };
+      }
       const relayer = getRelayerClient();
       const hash = await relayer.writeContract({
         address: safeAddress,
         abi: SAFE_EXEC_ABI,
         functionName: "execTransaction",
         args: [
-          BASE_USDC_ADDRESS,
+          getAddress(token),
           0n,
           data,
           0,
@@ -383,6 +473,10 @@ export function createAgentSafeRuntime({
       if (receipt.status !== "success") throw new Error("operator_transaction_reverted");
       return { txHash: hash, safeTxHash };
     });
+  }
+
+  async function execSafeUsdcCall({ walletRecord, agentEthPrivateKeyHex, data, opId, signal }) {
+    return await execSafeTokenCall({ walletRecord, agentEthPrivateKeyHex, data, opId, signal });
   }
 
   async function ensurePermit2Allowance({ walletRecord, agentEthPrivateKeyHex, requiredUnits, opId, signal }) {
@@ -407,13 +501,25 @@ export function createAgentSafeRuntime({
     });
   }
 
-  async function transferUsdc({ walletRecord, agentEthPrivateKeyHex, to, amountUnits, opId, signal }) {
+  async function transferToken({ walletRecord, agentEthPrivateKeyHex, to, amountUnits, opId, signal, chainId = BASE_CHAIN_ID, token = BASE_USDC_ADDRESS }) {
     const data = encodeFunctionData({
       abi: ERC20_ABI,
       functionName: "transfer",
       args: [getAddress(to), BigInt(amountUnits)],
     });
-    return await execSafeUsdcCall({ walletRecord, agentEthPrivateKeyHex, data, opId, signal });
+    return await execSafeTokenCall({
+      walletRecord,
+      agentEthPrivateKeyHex,
+      data,
+      opId,
+      signal,
+      chainId: Number(chainId),
+      token: getAddress(token),
+    });
+  }
+
+  async function transferUsdc({ walletRecord, agentEthPrivateKeyHex, to, amountUnits, opId, signal }) {
+    return await transferToken({ walletRecord, agentEthPrivateKeyHex, to, amountUnits, opId, signal });
   }
 
   return {
@@ -424,5 +530,10 @@ export function createAgentSafeRuntime({
     signSafeTypedData,
     ensurePermit2Allowance,
     transferUsdc,
+    transferToken,
+    execSafeTokenCall,
+    clientForChain,
+    chainFor,
+    isTempoChain,
   };
 }
