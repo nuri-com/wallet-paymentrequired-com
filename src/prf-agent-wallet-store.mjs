@@ -21,6 +21,8 @@ export const PRF_WALLET_KEY_RE = /^npw1_[A-Za-z0-9_-]{43}$/;
 const STORE_AAD_PREFIX = "nuri-prf-agent-store-v1";
 const SESSION_AAD_PREFIX = "nuri-prf-grant-session-v1";
 const DETERMINISTIC_KEY_DOMAIN = "nuri-prf-wallet-key-v1";
+const LNURL_AAD_PREFIX = "nuri-prf-lnurl-receive-v1";
+const LNURL_USERNAME_RE = /^[a-z0-9](?:[a-z0-9._-]{0,30}[a-z0-9])?$/;
 
 export function isPrfWalletKey(value) {
   return typeof value === "string" && PRF_WALLET_KEY_RE.test(value.trim());
@@ -194,6 +196,16 @@ export function openPrfAgentWalletStore({
       ON nuri_prf_agent_wallets(cred_id_b64u, slot_index);
     CREATE INDEX IF NOT EXISTS idx_nuri_prf_wallets_main_eoa
       ON nuri_prf_agent_wallets(LOWER(main_eoa));
+
+    CREATE TABLE IF NOT EXISTS nuri_prf_lnurl_handles (
+      username TEXT PRIMARY KEY,
+      wallet_id TEXT NOT NULL,
+      sealed_receive_secret TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_nuri_prf_lnurl_handles_wallet
+      ON nuri_prf_lnurl_handles(wallet_id);
 
     CREATE TABLE IF NOT EXISTS nuri_prf_lightning_receives (
       rfq_id TEXT PRIMARY KEY,
@@ -578,6 +590,100 @@ export function openPrfAgentWalletStore({
     return mapWalletRow(row);
   }
 
+  // ---- LNURL handles (username@nuriwallet.com) ----
+  // A handle binds a username to a PRF wallet and carries its own server-sealable
+  // receive root: a random 32-byte secret from which every LNURL receive's claim
+  // key + preimage is HKDF-derived (same shape as agent-arkade-v2's
+  // deriveLightningReceiveSecrets, which takes any 32-byte secret).
+  function deriveLnurlSealKey(walletId) {
+    return Buffer.from(
+      hkdf(
+        sha256,
+        masterKey,
+        new TextEncoder().encode(LNURL_AAD_PREFIX),
+        new TextEncoder().encode(`${LNURL_AAD_PREFIX}:${String(walletId)}`),
+        32,
+      ),
+    );
+  }
+
+  function mapLnurlHandleRow(row) {
+    if (!row) return null;
+    return {
+      username: row.username,
+      walletId: row.wallet_id,
+      sealedReceiveSecret: row.sealed_receive_secret,
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+    };
+  }
+
+  function getLnurlHandle(username) {
+    const clean = String(username || "").trim().toLowerCase();
+    if (!LNURL_USERNAME_RE.test(clean)) return null;
+    return mapLnurlHandleRow(
+      db.prepare("SELECT * FROM nuri_prf_lnurl_handles WHERE username = ?").get(clean),
+    );
+  }
+
+  function listLnurlHandlesByWallet(walletId) {
+    return db
+      .prepare("SELECT * FROM nuri_prf_lnurl_handles WHERE wallet_id = ? ORDER BY created_at ASC")
+      .all(String(walletId || ""))
+      .map(mapLnurlHandleRow);
+  }
+
+  function registerLnurlHandle({ username, walletId, nowMs = Date.now() }) {
+    const clean = String(username || "").trim().toLowerCase();
+    if (!LNURL_USERNAME_RE.test(clean)) throw new Error("username_invalid");
+    const wallet = getWalletById(walletId);
+    if (!wallet) throw new Error("wallet_not_found");
+    const existing = getLnurlHandle(clean);
+    if (existing && existing.walletId !== wallet.walletId) {
+      throw Object.assign(new Error("username_taken"), { code: "username_taken" });
+    }
+    let receiveSecretHex;
+    if (existing) {
+      receiveSecretHex = openJson(
+        existing.sealedReceiveSecret,
+        deriveLnurlSealKey(existing.walletId),
+        `${STORE_AAD_PREFIX}:lnurl:${clean}:${existing.walletId}`,
+      ).root;
+    } else {
+      receiveSecretHex = randomBytes(32).toString("hex");
+    }
+    db.prepare(
+      `INSERT INTO nuri_prf_lnurl_handles (username, wallet_id, sealed_receive_secret, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(username) DO UPDATE SET wallet_id = excluded.wallet_id, updated_at = excluded.updated_at`,
+    ).run(
+      clean,
+      wallet.walletId,
+      sealJson(
+        { root: receiveSecretHex },
+        deriveLnurlSealKey(wallet.walletId),
+        `${STORE_AAD_PREFIX}:lnurl:${clean}:${wallet.walletId}`,
+      ),
+      nowMs,
+      nowMs,
+    );
+    return getLnurlHandle(clean);
+  }
+
+  // Unseal a handle's receive root with the server master key alone (no PRF wallet_key):
+  // lets the public LNURL callback and the unattended claim sweeper work offline of sessions.
+  function openLnurlReceiveSecret(handle) {
+    const record = typeof handle === "string" ? getLnurlHandle(handle) : handle;
+    if (!record) throw new Error("lnurl_handle_unknown");
+    const opened = openJson(
+      record.sealedReceiveSecret,
+      deriveLnurlSealKey(record.walletId),
+      `${STORE_AAD_PREFIX}:lnurl:${record.username}:${record.walletId}`,
+    );
+    if (!/^[0-9a-f]{64}$/.test(String(opened.root || ""))) throw new Error("lnurl_receive_secret_invalid");
+    return String(opened.root);
+  }
+
   function getWalletByKey(walletKey) {
     if (!isPrfWalletKey(walletKey)) return null;
     const row = db
@@ -817,6 +923,10 @@ export function openPrfAgentWalletStore({
     findLatestWalletByMainEoa,
     unlockWalletSecrets,
     updateWalletArkadeAddress,
+    getLnurlHandle,
+    listLnurlHandlesByWallet,
+    registerLnurlHandle,
+    openLnurlReceiveSecret,
     saveLightningReceive,
     getLightningReceive,
     getLightningReceiveByRequest,

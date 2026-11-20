@@ -184,6 +184,7 @@ function encryptGrantForTest({ prfBytes, sessionId, replyPubkey, index = 0, poli
     "receive",
     "pay",
     "history",
+    "lnurl",
   ]);
   assert.equal(DEFAULT_ARKADE_SOLVER_PUBKEY.length, 64);
 
@@ -1579,7 +1580,46 @@ try {
   assert.equal(paidMppEvm.rail, "usdc");
   assert.equal(JSON.parse(paidMppEvm.resource.body).compute, "mpp-evm-paid-ok");
 
-  // Step J: Direct BOLT11 invoice, Lightning Address (`alice@...`), Arkade native send (`ark1...`), and 0x Base USDC send
+  // Step I2: LNURL handle on nuriwallet.com — register, public serve, callback invoice
+  {
+    const registered = await walletTool.call({
+      action: "receive",
+      wallet_key: walletKey,
+      lnurl_username: "nuri-agents-rock",
+    });
+    assert.equal(registered.ok, true);
+    assert.equal(registered.rail, "lnurl");
+    assert.equal(registered.lnurl, "nuri-agents-rock@nuriwallet.com");
+
+    // Second wallet cannot take the same username; same wallet re-registers fine.
+    const taken = await walletTool.call({ action: "receive", wallet_key: walletKey, lnurl_username: "nuri-agents-rock" });
+    assert.equal(taken.ok, true);
+
+    const served = await walletTool.call({ action: "lnurl", lnurl_username: "nuri-agents-rock" });
+    assert.equal(served.ok, true);
+    assert.equal(served.payRequest.status, "OK");
+    assert.equal(served.payRequest.tag, "payRequest");
+    assert.equal(served.payRequest.callback, "https://nuriwallet.com/lnurl/callback/nuri-agents-rock");
+    assert.equal(served.payRequest.minSendable, 340000);
+    assert.match(served.payRequest.metadata, /nuri-agents-rock@nuriwallet\.com/);
+
+    const cb = await walletTool.call({ action: "lnurl", lnurl_username: "nuri-agents-rock", lnurl_op: "callback", amount_msat: 500000 });
+    assert.equal(cb.ok, true);
+    assert.ok(cb.pr.startsWith("lnbc"), `callback returned a BOLT11 invoice: ${String(cb.pr).slice(0, 24)}…`);
+    assert.equal(cb.amount_sats, 500);
+    assert.match(cb.request_id, /^lnurlp:nuri-agents-rock:/);
+
+    const unknown = await walletTool.call({ action: "lnurl", lnurl_username: "nobody" });
+    assert.equal(unknown.ok, false);
+    assert.equal(unknown.status, 404);
+
+    // Bad amounts rejected cleanly
+    const bad = await walletTool.call({ action: "lnurl", lnurl_username: "nuri-agents-rock", lnurl_op: "callback", amount_msat: 500 });
+    assert.equal(bad.ok, false);
+    assert.match(bad.error, /millisatoshis/);
+  }
+
+
   const paidBolt = await walletTool.call({
     action: "pay",
     wallet_key: walletKey,
@@ -1854,7 +1894,7 @@ try {
 
   walletTool.close();
   console.log(
-    "prf arkade v2 check ok: frozen vectors, connect agent_grant, 2-of-4 Safe (x402 + MPP + 0x + payFee), 2-of-2 MuSig2 Arkade + Lightning Intents (L402 + Lightning MPP + BOLT11 + LNURL + pushClaim), and legacy v1 coexistence verified",
+    "prf arkade v2 check ok: frozen vectors, connect agent_grant, 2-of-4 Safe (x402 + MPP + 0x + payFee + Tempo MPP selection), 2-of-2 MuSig2 Arkade + Lightning Intents (L402 + Lightning MPP + BOLT11 + LNURL + pushClaim), nuriwallet.com LNURL handles, and legacy v1 coexistence verified",
   );
 } finally {
   Object.keys(process.env).forEach((k) => {

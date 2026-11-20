@@ -126,7 +126,9 @@ export const WALLET_TOOL = {
   inputSchema: {
     type: "object", additionalProperties: false, required: ["action"],
     properties: {
-      action: { type: "string", enum: ["balance", "receive", "pay", "history"], description: "balance: show USDC + Bitcoin sats & addresses (or create/connect a Nuri Passkey wallet when wallet_key is omitted). receive: get Base USDC address, Arkade BTC address, or Lightning BOLT11 invoice. pay: pay any https:// 402 API (x402/L402/MPP), BOLT11 invoice, user@domain, bc1.../bitcoin: BTC address, ark1... Arkade, or 0x... Base USDC. history: past payments and receives." },
+      action: { type: "string", enum: ["balance", "receive", "pay", "history", "lnurl"], description: "balance: show USDC + Bitcoin sats & addresses (or create/connect a Nuri Passkey wallet when wallet_key is omitted). receive: get Base USDC address, Arkade BTC address, Lightning BOLT11 invoice, or register a username@nuriwallet.com Lightning address (lnurl_username). pay: pay any https:// 402 API (x402/L402/MPP), BOLT11 invoice, user@domain, bc1.../bitcoin: BTC address, ark1... Arkade, or 0x... Base USDC. history: past payments and receives." },
+      lnurl_username: { type: "string", maxLength: 64, pattern: "^[a-zA-Z0-9._-]+$", description: "receive: register username@nuriwallet.com." },
+      amount_msat: { type: "integer", description: "lnurl callback millisats." },
       wallet_key: { type: "string", pattern: TOKEN.source, description: "Wallet key (npw1_...) returned after Passkey approval. Send on every call once connected." },
       to: { type: "string", maxLength: 4096, description: "For pay: destination — https:// paid API, lnbc... BOLT11 invoice, user@domain Lightning Address, bc1.../bitcoin:... on-chain Bitcoin, ark1... Arkade, or 0x... Base USDC." },
       url: { type: "string", maxLength: 4096, description: "Optional alias for to when paying a paid https:// URL." },
@@ -919,16 +921,20 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
       "action", "wallet_key", "session", "rail", "url", "invoice", "to",
       "amount", "amount_sats", "max_amount", "max_sats", "prefer", "dry_run",
       "method", "body", "request_id", "chain", "query", "limit", "new",
-      "index", "prompt", "quality",
+      "index", "prompt", "quality", "lnurl_username", "lnurl_op", "amount_msat",
     ];
     if (!args || typeof args !== "object" || Array.isArray(args) || Object.keys(args).some(key => !allowed.includes(key))) {
       return { ok: false, error: "This tool takes only action plus the fields named for it. Send nothing else and try again.", next: NEXT_ARGS };
     }
-    if (!["balance", "receive", "pay", "history", "fund", "ask", "send", "bridge", "discover"].includes(args.action)) {
+    if (!["balance", "receive", "pay", "history", "fund", "ask", "send", "bridge", "discover", "lnurl"].includes(args.action)) {
       return { ok: false, error: "action must be balance, receive, pay or history. Pick one and try again.", next: NEXT_ARGS };
     }
     try {
       const prf = prfCoordinator();
+      // Public LNURL-pay surface (username@nuriwallet.com): serve + callback need no wallet_key.
+      if (args.action === "lnurl" && prf.configured) {
+        return await prf.handleLnurl(args);
+      }
       const usePrfOnboarding =
         prf.configured &&
         args.action === "balance" &&
