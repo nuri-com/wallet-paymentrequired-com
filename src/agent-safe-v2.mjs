@@ -301,7 +301,7 @@ export function createAgentSafeRuntime({
     return Boolean(code && code !== "0x" && code.length > 2);
   }
 
-  async function ensureSafeDeployed(walletRecord, chainId = BASE_CHAIN_ID) {
+  async function ensureSafeDeployed(walletRecord, chainId = BASE_CHAIN_ID, feeToken = BASE_USDC_ADDRESS) {
     const safeAddress = getAddress(walletRecord.safe_address);
     if (await isSafeDeployed(safeAddress, chainId)) return { deployed: true, txHash: null };
     const predicted = predictAgentSafeAddress({
@@ -348,6 +348,16 @@ export function createAgentSafeRuntime({
   async function readUsdcBalanceUnits(safeAddress) {
     const bal = await pub.readContract({
       address: BASE_USDC_ADDRESS,
+      abi: ERC20_ABI,
+      functionName: "balanceOf",
+      args: [getAddress(safeAddress)],
+    });
+    return BigInt(bal);
+  }
+
+  async function readTokenBalanceUnits(safeAddress, token = BASE_USDC_ADDRESS, chainId = BASE_CHAIN_ID) {
+    const bal = await clientForChain(chainId).readContract({
+      address: getAddress(token),
       abi: ERC20_ABI,
       functionName: "balanceOf",
       args: [getAddress(safeAddress)],
@@ -527,6 +537,7 @@ export function createAgentSafeRuntime({
     isSafeDeployed,
     ensureSafeDeployed,
     readUsdcBalanceUnits,
+    readTokenBalanceUnits,
     signSafeTypedData,
     ensurePermit2Allowance,
     transferUsdc,

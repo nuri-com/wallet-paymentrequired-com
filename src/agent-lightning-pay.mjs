@@ -360,10 +360,16 @@ export function classifyHttp402Response({
           ? prefer
           : undefined;
       const offer = selectMppOffer(evmOffers, { chainIds: [BASE_CHAIN_ID, ...TEMPO_CHAIN_IDS], prefer: mppPrefer });
+      const paidOffers = evmOffers.filter((o) => BigInt(o.amount) > 0n);
+      const paidFallback =
+        BigInt(offer.amount) === 0n && paidOffers.length > 0
+          ? selectMppOffer(paidOffers, { chainIds: [BASE_CHAIN_ID, ...TEMPO_CHAIN_IDS], prefer: mppPrefer })
+          : null;
       candidates.push({
         kind: "mpp-evm",
         rail: "usdc",
         offer,
+        ...(paidFallback ? { paidFallback } : {}),
         amountUnits: offer.amount,
       });
     } catch {
@@ -562,26 +568,41 @@ export function createPrfHttp402Payer({
           amount_units: selected.amountUnits, over_cap: overCap, quote: quoteSolanaOffer(selected.offer),
           available_units: solanaBal.toString(), payable: solanaBal >= BigInt(selected.amountUnits) && !overCap };
       }
-      const usdcBal =
-        prefBalances?.usdcUnits ??
-        (await safeRuntime.readUsdcBalanceUnits(walletRecord.safeAddress));
-      const nativePayable = usdcBal >= BigInt(selected.amountUnits);
+      const quoteTarget =
+        selected.kind === "mpp-evm" && BigInt(selected.offer.amount) === 0n && selected.paidFallback
+          ? selected.paidFallback
+          : selected.offer;
+      const quoteIsTempo =
+        selected.kind === "mpp-evm" && TEMPO_CHAIN_IDS.includes(Number(quoteTarget?.chainId));
+      const quoteAmountUnits = quoteTarget?.amount ?? selected.amountUnits;
+      const usdcBal = quoteIsTempo
+        ? typeof safeRuntime?.readTokenBalanceUnits === "function"
+          ? await safeRuntime
+              .readTokenBalanceUnits(walletRecord.safeAddress, quoteTarget.asset, Number(quoteTarget.chainId))
+              .catch(() => 0n)
+          : 0n
+        : prefBalances?.usdcUnits ??
+          (await safeRuntime.readUsdcBalanceUnits(walletRecord.safeAddress));
+      const requiredUnits = quoteIsTempo && BigInt(quoteAmountUnits) > 0n
+        ? BigInt(quoteAmountUnits) + TEMPO_HOP_FEE_RESERVE_UNITS
+        : BigInt(quoteAmountUnits);
+      const nativePayable = usdcBal >= requiredUnits;
       let crossRail = false;
-      if (!nativePayable && arkadeRuntime && ensureRailFunded) {
+      if (!nativePayable && !quoteIsTempo && arkadeRuntime && ensureRailFunded) {
         const arkBal =
           prefBalances?.sats ??
           (await arkadeRuntime.readBalance(walletRecord).then((b) => b.sats).catch(() => 0n));
         if (arkBal > 0n) crossRail = true;
       }
-      const overCap = isUsdcOverCap(selected.amountUnits);
-      const q = selected.kind === "x402" ? quoteOffer(selected.offer) : quoteMppOffer(selected.offer);
+      const overCap = isUsdcOverCap(quoteAmountUnits);
+      const q = selected.kind === "x402" ? quoteOffer(selected.offer) : quoteMppOffer(quoteTarget);
       return {
         status: "done",
         dry_run: true,
         protocol: selected.kind,
         rail: "usdc",
         ...(crossRail ? { cross_rail: true, funded_from: "arkade" } : {}),
-        amount_units: selected.amountUnits,
+        amount_units: quoteAmountUnits,
         over_cap: overCap,
         quote: q,
         available_units: usdcBal.toString(),
@@ -703,8 +724,10 @@ export function createPrfHttp402Payer({
       throw err;
     }
 
+    const selectedIsTempo =
+      selected.kind === "mpp-evm" && TEMPO_CHAIN_IDS.includes(Number(selected.offer?.chainId));
     let bridged = null;
-    if (ensureRailFunded) {
+    if (ensureRailFunded && !selectedIsTempo) {
       const currentUsdc =
         prefBalances?.usdcUnits ??
         (await safeRuntime.readUsdcBalanceUnits(walletRecord.safeAddress).catch(() => 0n));
@@ -795,43 +818,97 @@ export function createPrfHttp402Payer({
         ? secrets.agentEthPrivHex
         : `0x${secrets.agentEthPrivHex}`,
     );
-    const offerChainId = Number(selected.offer.chainId);
-    const offerIsTempo = TEMPO_CHAIN_IDS.includes(offerChainId);
-    let hopTxHash = null;
-    let secondRaw = null;
-    const { response: second, receipt } = await payMppCharge({
-      offer: selected.offer,
-      agent: agentAccount,
-      evmAuthorization:
-        selected.offer.asset?.toLowerCase() === BASE_USDC_ADDRESS.toLowerCase()
-          ? { name: "USD Coin", version: "2" }
-          : undefined,
-      feeReserve: offerIsTempo ? TEMPO_HOP_FEE_RESERVE_UNITS : 0n,
-      hop: async (_token, amount) => {
-        const hopped = await safeRuntime.transferToken({
-          walletRecord: safeWalletRow,
-          agentEthPrivateKeyHex: secrets.agentEthPrivHex,
-          to: agentAccount.address,
-          amountUnits: amount,
-          opId: `${opId}:mpp-hop`,
-          chainId: offerChainId,
-          token: selected.offer.asset,
+
+    async function runMppOffer(offer, hopSuffix) {
+      const offerChainId = Number(offer.chainId);
+      const offerIsTempo = TEMPO_CHAIN_IDS.includes(offerChainId);
+      const offerAmountUnits = BigInt(offer.amount);
+      if (offerAmountUnits > 0n && isUsdcOverCap(offer.amount)) {
+        const err = new Error("invoice_exceeds_max_amount");
+        err.code = "over_max_amount";
+        err.invoiceUnits = offer.amount;
+        if (maxAmountUnits !== undefined && maxAmountUnits !== null) err.maxUnits = String(maxAmountUnits);
+        if (maxSats !== undefined && maxSats !== null) err.maxSats = Number(maxSats);
+        throw err;
+      }
+      if (offerIsTempo && offerAmountUnits > 0n && typeof safeRuntime.readTokenBalanceUnits === "function") {
+        const tempoBal = await safeRuntime
+          .readTokenBalanceUnits(walletRecord.safeAddress, offer.asset, offerChainId)
+          .catch(() => null);
+        const needed = offerAmountUnits + TEMPO_HOP_FEE_RESERVE_UNITS;
+        if (tempoBal !== null && tempoBal < needed) {
+          const err = new Error(
+            `insufficient_tempo_balance: Safe ${walletRecord.safeAddress} holds ${tempoBal} units of ${offer.asset} on Tempo (chain ${offerChainId}), need ${needed} (${offerAmountUnits} payment + ${TEMPO_HOP_FEE_RESERVE_UNITS} fee reserve).`,
+          );
+          err.code = "insufficient_tempo_balance";
+          throw err;
+        }
+      }
+      let hopTxHash = null;
+      let rawRes = null;
+      const { response, receipt } = await payMppCharge({
+        offer,
+        agent: agentAccount,
+        evmAuthorization:
+          offer.asset?.toLowerCase() === BASE_USDC_ADDRESS.toLowerCase()
+            ? { name: "USD Coin", version: "2" }
+            : undefined,
+        feeReserve: offerIsTempo ? TEMPO_HOP_FEE_RESERVE_UNITS : 0n,
+        hop: async (_token, amount) => {
+          const hopped = await safeRuntime.transferToken({
+            walletRecord: safeWalletRow,
+            agentEthPrivateKeyHex: secrets.agentEthPrivHex,
+            to: agentAccount.address,
+            amountUnits: amount,
+            opId: `${opId}:${hopSuffix}`,
+            chainId: offerChainId,
+            token: offer.asset,
+          });
+          hopTxHash = hopped.txHash;
+        },
+        getClient: (chainId) => safeRuntime.clientForChain(chainId),
+        fetchPaid: async (credentialHeader) => {
+          const res = await merchantFetch(url, {
+            headers: credentialHeader ? { Authorization: credentialHeader } : {},
+            shape,
+          });
+          rawRes = res;
+          return new Response(res.bytes, {
+            status: res.status,
+            headers: Object.entries(res.headers || {}).filter(([, v]) => typeof v === "string"),
+          });
+        },
+      });
+      return { response, receipt, hopTxHash, rawRes, offer };
+    }
+
+    let attempt = await runMppOffer(selected.offer, "mpp-hop");
+    // Credit-proof flow (e.g. treg.to): first challenge has amount=0 (free EIP-712
+    // wallet proof to spend prepaid credit). If the server replies 402 with a paid
+    // charge challenge (credit_insufficient), settle that paid challenge once.
+    if (
+      BigInt(selected.offer.amount) === 0n &&
+      attempt.response.status === 402 &&
+      attempt.rawRes &&
+      /^\s*Payment\s/i.test(getHeader(attempt.rawRes.headers, "www-authenticate") || "")
+    ) {
+      const mppPrefer =
+        prefer && ["mpp", "mpp:evm", "charge", "session"].includes(String(prefer))
+          ? prefer
+          : undefined;
+      const followOffers = parseMppChallenges({ headers: attempt.rawRes.headers }).filter(
+        (o) => BigInt(o.amount) > 0n,
+      );
+      if (followOffers.length > 0) {
+        const paidOffer = selectMppOffer(followOffers, {
+          chainIds: [BASE_CHAIN_ID, ...TEMPO_CHAIN_IDS],
+          prefer: mppPrefer,
         });
-        hopTxHash = hopped.txHash;
-      },
-      getClient: (chainId) => safeRuntime.clientForChain(chainId),
-      fetchPaid: async (credentialHeader) => {
-        const res = await merchantFetch(url, {
-          headers: credentialHeader ? { Authorization: credentialHeader } : {},
-          shape,
-        });
-        secondRaw = res;
-        return new Response(res.bytes, {
-          status: res.status,
-          headers: Object.entries(res.headers || {}).filter(([, v]) => typeof v === "string"),
-        });
-      },
-    });
+        attempt = await runMppOffer(paidOffer, "mpp-hop-paid");
+      }
+    }
+
+    const { response: second, receipt, hopTxHash, rawRes: secondRaw, offer: finalOffer } = attempt;
 
     return {
       status: second.status >= 200 && second.status < 300 ? "done" : "failed",
@@ -840,8 +917,8 @@ export function createPrfHttp402Payer({
       rail: "usdc",
       ...(bridged ? { funded_from: "arkade", bridged } : {}),
       http_status: second.status,
-      amount_units: selected.offer.amount,
-      asset: selected.offer.asset,
+      amount_units: finalOffer.amount,
+      asset: finalOffer.asset,
       tx_hash: receipt?.reference || hopTxHash || null,
       hop_tx_hash: hopTxHash,
       resource: secondRaw ? formatResourceBody(secondRaw) : null,

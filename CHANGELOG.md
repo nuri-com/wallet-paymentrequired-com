@@ -5,6 +5,16 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — Tempo MPP feeToken & two-step credit-proof fix (2026-11-23)
+
+- Fix `ensureSafeDeployed` missing `feeToken` parameter when deploying a counterfactual PRF Safe
+  on Tempo (`src/agent-safe-v2.mjs`) and expose `readTokenBalanceUnits` for chain-accurate Tempo
+  balance checks.
+- Skip on-chain Safe → Agent EOA hops for zero-amount MPP EIP-712 credit-proof challenges
+  (`src/safe-pay-mpp.mjs`), and handle two-step MPP credit-proof → `402 credit_insufficient` →
+  paid-challenge retry with cap enforcement and Tempo balance checks (`src/agent-lightning-pay.mjs`,
+  fixing `treg.to` MPP challenges).
+
 ## Unreleased — 24h PRF passkey connect links (2026-11-23)
 
 - Pass explicit `timeout_ms` (default 24 h via `DEFAULT_GRANT_CONNECT_TIMEOUT_MS`, overridable

@@ -3,6 +3,10 @@
 
 ## 2026-11-23 — Emin; recorded by Antigravity
 
+- Live `treg.to` MPP test hit `feeToken is not defined` on Tempo Safe deploy and ran a hop for
+  treg's free `amount: "0"` EIP-712 proof challenge → fixed `ensureSafeDeployed(..., feeToken)`,
+  added `readTokenBalanceUnits`, skipped hops on `amount === 0`, and added two-step MPP
+  `402 credit_insufficient` retry with cap & Tempo balance checks.
 - "why are these links expiring so fast can they please stay valid for at least 1 hour or more ...
   after fixing, also please update the changelog and github repo for it" → `startOrPollOnboarding`
   omitted `timeoutMs`, falling back to Connect's 60-minute default; now passes 24 h

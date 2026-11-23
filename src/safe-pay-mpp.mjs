@@ -95,7 +95,10 @@ export async function tempoAccountOf(signer) {
 // hop carries amount + feeReserve and sweepToSafe returns what is left. EVM charges are gasless (0).
 export async function payMppCharge({ offer, agent, hop, getClient, fetchPaid, evmAuthorization, feeReserve = 0n }) {
   check(offer.intent === 'charge', 'mpp_intent_mismatch');
-  await hop(offer.asset, BigInt(offer.amount) + (offer.method === 'tempo' ? BigInt(feeReserve) : 0n));
+  const amountUnits = BigInt(offer.amount);
+  if (amountUnits > 0n) {
+    await hop(offer.asset, amountUnits + (offer.method === 'tempo' ? BigInt(feeReserve) : 0n));
+  }
   const method = offer.method === 'evm'
     ? evmClient.charge({ account: agent, networks: [offer.chainId], ...(evmAuthorization ? { authorization: evmAuthorization } : {}) })
     : tempoClient.charge({ account: await tempoAccountOf(agent), getClient: () => getClient(offer.chainId), expectedChainId: offer.chainId, mode: 'pull' });

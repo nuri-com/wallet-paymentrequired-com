@@ -68,7 +68,7 @@ import {
   predictAgentSafeAddress,
   predictPasskeySignerAddress,
 } from "../src/agent-safe-v2.mjs";
-import { parseMppChallenges, selectMppOffer } from "../src/safe-pay-mpp.mjs";
+import { parseMppChallenges, payMppCharge, selectMppOffer } from "../src/safe-pay-mpp.mjs";
 import {
   DEFAULT_ARKADE_SOLVER_PUBKEY,
   NuriAgentVtxoScript,
@@ -1567,6 +1567,128 @@ try {
     });
     const dualPick = selectMppOffer(dual, { chainIds: [BASE_CHAIN_ID, ...TEMPO_CHAIN_IDS] });
     assert.equal(dualPick.method, "evm"); // charge intent + lowest index first
+
+    // Zero-amount Tempo credit-proof challenge (e.g. treg.to) must sign EIP-712 proof without hopping
+    const mppTempoProofChallenge = Challenge.from({
+      id: "chal-tempo-proof-0",
+      realm: "treg.to",
+      method: "tempo",
+      intent: "charge",
+      request: {
+        amount: "0",
+        currency: PATHUSD_ADDRESS,
+        recipient: "0x7777777777777777777777777777777777777777",
+        methodDetails: { chainId: 4217, decimals: 6 },
+      },
+    });
+    const mppTempoPaidChallenge = Challenge.from({
+      id: "chal-tempo-paid-1",
+      realm: "treg.to",
+      method: "tempo",
+      intent: "charge",
+      request: {
+        amount: "110000",
+        currency: PATHUSD_ADDRESS,
+        recipient: "0x7777777777777777777777777777777777777777",
+        methodDetails: { chainId: 4217, decimals: 6 },
+      },
+    });
+    const proofOffers = parseMppChallenges({
+      headers: new Headers({ "www-authenticate": Challenge.serialize(mppTempoProofChallenge) }),
+    });
+    const testTempoAgentPriv = "11".repeat(32);
+    const testTempoAgent = privateKeyToAccount(`0x${testTempoAgentPriv}`);
+    let zeroHopCalls = 0;
+    let capturedAuth = null;
+    const proofRes = await payMppCharge({
+      offer: proofOffers[0],
+      agent: testTempoAgent,
+      feeReserve: 2_000_000n,
+      hop: async () => { zeroHopCalls += 1; },
+      getClient: () => ({ chain: { id: 4217 } }),
+      fetchPaid: async (auth) => {
+        capturedAuth = auth;
+        return new Response(JSON.stringify({ ok: true, credit: true }), { status: 200 });
+      },
+    });
+    assert.equal(zeroHopCalls, 0, "zero-amount MPP credit proof must not hop on-chain");
+    assert.match(String(capturedAuth || ""), /^Payment /);
+    assert.equal(proofRes.response.status, 200);
+
+    // Two-step Tempo credit-proof -> 402 credit_insufficient -> paid challenge flow
+    let tregStep = 0;
+    const tregPayer = createPrfHttp402Payer({
+      safeRuntime: {
+        publicClient: { readContract: async () => 0n },
+        clientForChain: () => ({ chain: { id: 4217 } }),
+        readUsdcBalanceUnits: async () => 5_000_000n, // funded on Base, NOT Tempo
+        readTokenBalanceUnits: async () => 0n,       // 0 on Tempo
+        transferToken: async () => { throw new Error("must_not_hop_when_unfunded"); },
+      },
+      merchantFetch: async (_url, { headers }) => {
+        tregStep += 1;
+        if (!headers.Authorization) {
+          return {
+            status: 402,
+            headers: {
+              "www-authenticate": `${Challenge.serialize(mppTempoProofChallenge)}, ${Challenge.serialize(mppTempoPaidChallenge)}`,
+            },
+            bytes: Buffer.from('{"detail":{"error":"payment_required"}}'),
+          };
+        }
+        return {
+          status: 402,
+          headers: { "www-authenticate": Challenge.serialize(mppTempoPaidChallenge) },
+          bytes: Buffer.from('{"detail":{"error":"credit_insufficient"}}'),
+        };
+      },
+    });
+    const fakeWalletRec = {
+      credIdB64u: "cred-tempo-1",
+      slotIndex: 0,
+      mainEoa: MAIN_WALLET_ACCOUNT.address,
+      passkeySignerAddress: "0x1111111111111111111111111111111111111111",
+      agentEthEoa: testTempoAgent.address,
+      cosignerEoa: "0x3333333333333333333333333333333333333333",
+      safeAddress: "0x4444444444444444444444444444444444444444",
+    };
+    const tregDry = await tregPayer.payHttpResource({
+      walletRecord: fakeWalletRec,
+      secrets: { agentEthPrivHex: testTempoAgentPriv },
+      url: "https://treg.example.com/call/test",
+      maxAmountUnits: 200_000n,
+      dryRun: true,
+      opId: "treg-dry",
+    });
+    assert.equal(tregDry.amount_units, "110000");
+    assert.equal(tregDry.available_units, "0");
+    assert.equal(tregDry.payable, false);
+
+    // Real pay: tries free amount=0 proof first, then enforces cap on follow-up 402
+    tregStep = 0;
+    await assert.rejects(
+      () => tregPayer.payHttpResource({
+        walletRecord: fakeWalletRec,
+        secrets: { agentEthPrivHex: testTempoAgentPriv },
+        url: "https://treg.example.com/call/test",
+        maxAmountUnits: 50_000n,
+        opId: "treg-cap",
+      }),
+      (err) => err.code === "over_max_amount" && err.invoiceUnits === "110000",
+    );
+    assert.equal(tregStep, 2, "must submit free amount=0 proof before receiving paid 402");
+
+    // Within cap, 0 Tempo balance fails cleanly with insufficient_tempo_balance before any hop
+    await assert.rejects(
+      () => tregPayer.payHttpResource({
+        walletRecord: fakeWalletRec,
+        secrets: { agentEthPrivHex: testTempoAgentPriv },
+        url: "https://treg.example.com/call/test",
+        maxAmountUnits: 200_000n,
+        opId: "treg-bal",
+      }),
+      (err) => err.code === "insufficient_tempo_balance",
+    );
   }
   // Step I: Pay HTTP 402 via EVM MPP (Safe -> Agent EOA hop + stock `mppx`)
   const paidMppEvm = await walletTool.call({
