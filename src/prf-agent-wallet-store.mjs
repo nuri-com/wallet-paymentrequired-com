@@ -315,6 +315,7 @@ export function openPrfAgentWalletStore({
     const raw = String(expiresAt ?? "").trim();
     if (/^\d+$/.test(raw)) {
       const n = Number(raw);
+      if (n === 0) return Number.POSITIVE_INFINITY;
       if (Number.isFinite(n) && n > 0) {
         return n < 1e11 ? n * 1000 : n;
       }
@@ -322,7 +323,7 @@ export function openPrfAgentWalletStore({
     const parsed = Date.parse(raw);
     if (Number.isFinite(parsed)) return parsed;
     const created = Number(createdAt);
-    return Number.isFinite(created) && created > 0 ? created + 15 * 60_000 : 0;
+    return Number.isFinite(created) && created > 0 ? created + 24 * 60 * 60_000 : 0;
   }
 
   function getGrantSession(requestId, nowMs = Date.now()) {

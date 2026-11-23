@@ -46,6 +46,8 @@ const BOLT11_RE = /^(?:lightning:)?ln(?:bc|tb|bcrt|tbs)[0-9a-z]+$/i;
 const LN_ADDRESS_RE = /^(?:lightning:)?[a-z0-9._+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
 const DECIMAL_AMOUNT_RE = /^(0|[1-9][0-9]{0,71})(\.[0-9]{1,6})?$/;
 
+export const DEFAULT_GRANT_CONNECT_TIMEOUT_MS = 24 * 60 * 60_000;
+
 export const DEFAULT_GRANT_POLICY = Object.freeze({
   max_per_tx_usdc: "25",
   daily_limit_usdc: "100",
@@ -123,7 +125,17 @@ export function createPrfWalletCoordinator({
   bridgePollIntervalMs = 2_000,
   autoClaimIntervalMs = 2_500,
   autoClaimTtlMs = 10 * 60_000,
+  grantConnectTimeoutMs,
 } = {}) {
+  const configuredGrantTimeout =
+    grantConnectTimeoutMs ??
+    (env.PRF_GRANT_CONNECT_TIMEOUT_MS !== undefined && String(env.PRF_GRANT_CONNECT_TIMEOUT_MS).trim() !== ""
+      ? Number(env.PRF_GRANT_CONNECT_TIMEOUT_MS)
+      : DEFAULT_GRANT_CONNECT_TIMEOUT_MS);
+  const resolvedGrantConnectTimeoutMs =
+    Number.isSafeInteger(configuredGrantTimeout) && configuredGrantTimeout >= 0
+      ? configuredGrantTimeout
+      : DEFAULT_GRANT_CONNECT_TIMEOUT_MS;
   const configured = isPrfCustodyConfigured(env) || Boolean(cosignerClient);
   let store = null;
   let connect = connectClient || null;
@@ -865,6 +877,7 @@ export function createPrfWalletCoordinator({
       replyPubkey: replyKp.replyPubkey,
       index: slotIndex,
       policy,
+      timeoutMs: resolvedGrantConnectTimeoutMs,
     });
     const saved = db.createGrantSession({
       requestId: reqId,

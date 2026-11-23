@@ -289,6 +289,7 @@ const mockHttpServer = createServer(async (req, res) => {
     const { name, arguments: args } = params;
     if (name === "wallet_sign_start") {
       assert.equal(args.operation, "agent_grant");
+      assert.equal(args.timeout_ms, 24 * 60 * 60_000);
       const sessionId = createHash("sha256")
         .update(`sess:${connectSessions.size}:${args.payload.reply_pubkey}`)
         .digest("hex");
@@ -297,7 +298,7 @@ const mockHttpServer = createServer(async (req, res) => {
         session_id: sessionId,
         kind: "sign",
         approval_url: `https://connect.nuri.com/approve?session_id=${sessionId}`,
-        expires_at: Date.now() + 3600_000,
+        expires_at: args.timeout_ms === 0 ? 0 : Date.now() + args.timeout_ms,
         payload: args.payload,
       };
       connectSessions.set(sessionId, record);
@@ -1766,6 +1767,20 @@ try {
       assert.equal(memStore.getGrantSession("req-retry-key", baseNow + 60_001).hasIssuedWalletKey, false);
       assert.equal(memStore.popIssuedGrantWalletKey("req-retry-key", { nowMs: baseNow + 60_001 }), null);
       assert.equal(memStore.getGrantSession("req-retry-key", baseNow).hasIssuedWalletKey, false);
+
+      // connect.nuri.com no-deadline sentinel (expires_at: 0) must not parse as expired (Jan 1, 2000)
+      const noDeadline = memStore.createGrantSession({
+        requestId: "req-no-deadline",
+        connectSessionId: "conn-no-deadline",
+        slotIndex: 0,
+        replyPubkey: "aa".repeat(32),
+        replySkHex: "bb".repeat(32),
+        policy: { max_usdc_per_tx: "5" },
+        approvalUrl: "https://connect.nuri.com/signature/conn-no-deadline",
+        expiresAt: 0,
+        nowMs: baseNow,
+      });
+      assert.equal(noDeadline.expiresAtMs, Number.POSITIVE_INFINITY);
 
       // Finalizing the same (cred_id_b64u, slot_index) with identical custody fields preserves wallet_id
       const sameCustody = memStore.finalizeGrantWallet({

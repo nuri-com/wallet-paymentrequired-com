@@ -5,6 +5,16 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — 24h PRF passkey connect links (2026-11-23)
+
+- Pass explicit `timeout_ms` (default 24 h via `DEFAULT_GRANT_CONNECT_TIMEOUT_MS`, overridable
+  via `PRF_GRANT_CONNECT_TIMEOUT_MS`, including `0` for no deadline) from `startOrPollOnboarding`
+  to `connect.nuri.com`'s `wallet_sign_start` (`src/mcp-wallet-prf-v2.mjs`) instead of omitting
+  `timeout_ms` and falling back to Connect's 60-minute `WALLET_SIGN_TTL_MS`.
+- Handle Connect's `expires_at: 0` no-deadline sentinel in `parseSessionExpiresAtMs` (previously
+  fell through to `Date.parse("0")` → Jan 1, 2000) and raise missing-expiry fallback from 15 min
+  to 24 h (`src/prf-agent-wallet-store.mjs`).
+
 ## Unreleased — Tempo MPP + nuriwallet.com LNURL (2026-11-20)
 
 - Tempo-chain MPP offers (4217/42431) are payable from the PRF Safe: same counterfactual

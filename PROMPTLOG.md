@@ -1,6 +1,14 @@
 # Prompt log
 
 
+## 2026-11-23 — Emin; recorded by Antigravity
+
+- "why are these links expiring so fast can they please stay valid for at least 1 hour or more ...
+  after fixing, also please update the changelog and github repo for it" → `startOrPollOnboarding`
+  omitted `timeoutMs`, falling back to Connect's 60-minute default; now passes 24 h
+  (`DEFAULT_GRANT_CONNECT_TIMEOUT_MS`, overridable via `PRF_GRANT_CONNECT_TIMEOUT_MS`) and fixes
+  `parseSessionExpiresAtMs` for `expires_at: 0` no-deadline sessions.
+
 ## 2026-11-20 — Emin; recorded by Hermes
 
 - "I need to get support for MPP tempo. For some reason our wallet can't do it." → Tempo MPP
