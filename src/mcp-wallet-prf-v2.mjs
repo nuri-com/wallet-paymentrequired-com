@@ -482,7 +482,9 @@ export function createPrfWalletCoordinator({
       return data;
     }
 
+    const MIN_RELAY_INPUT_UNITS = 100_000n;
     let inputUnits = needOut + 40_000n;
+    if (inputUnits < MIN_RELAY_INPUT_UNITS) inputUnits = MIN_RELAY_INPUT_UNITS;
     let quote = await quoteRelay(inputUnits);
     let quotedOut = BigInt(quote?.details?.currencyOut?.minimumAmount || quote?.details?.currencyOut?.amount || 0);
     if (quotedOut < needOut) {
