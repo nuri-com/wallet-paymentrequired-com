@@ -96,7 +96,7 @@ export async function tempoAccountOf(signer) {
 export async function payMppCharge({ offer, agent, hop, getClient, fetchPaid, evmAuthorization, feeReserve = 0n }) {
   check(offer.intent === 'charge', 'mpp_intent_mismatch');
   const amountUnits = BigInt(offer.amount);
-  if (amountUnits > 0n) {
+  if (amountUnits > 0n && typeof hop === 'function') {
     await hop(offer.asset, amountUnits + (offer.method === 'tempo' ? BigInt(feeReserve) : 0n));
   }
   const method = offer.method === 'evm'

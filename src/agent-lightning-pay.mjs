@@ -25,8 +25,10 @@ import { parseSolanaChallenge, payWithSolana, quoteSolanaOffer, readSolanaUsdcBa
 
 const denied = new BlockList();
 // Tempo has no gas coin: the Agent EOA pays its transferWithMemo fee in the token
-// itself, so a Tempo hop carries amount + this reserve (leftover stays on the EOA).
-const TEMPO_HOP_FEE_RESERVE_UNITS = 2_000_000n;
+// itself (~$0.0003 at 0.6 gwei), so keep a $0.03 buffer on the Agent EOA.
+const TEMPO_HOP_FEE_RESERVE_UNITS = 30_000n;
+const TEMPO_MAINNET_CHAIN_ID = 4217;
+const RELAY_FEE_ESTIMATE_UNITS = 40_000n;
 for (const [ip, bits] of [
   ["0.0.0.0", 8],
   ["10.0.0.0", 8],
@@ -575,24 +577,60 @@ export function createPrfHttp402Payer({
       const quoteIsTempo =
         selected.kind === "mpp-evm" && TEMPO_CHAIN_IDS.includes(Number(quoteTarget?.chainId));
       const quoteAmountUnits = quoteTarget?.amount ?? selected.amountUnits;
-      const usdcBal = quoteIsTempo
-        ? typeof safeRuntime?.readTokenBalanceUnits === "function"
-          ? await safeRuntime
-              .readTokenBalanceUnits(walletRecord.safeAddress, quoteTarget.asset, Number(quoteTarget.chainId))
-              .catch(() => 0n)
-          : 0n
-        : prefBalances?.usdcUnits ??
-          (await safeRuntime.readUsdcBalanceUnits(walletRecord.safeAddress));
       const requiredUnits = quoteIsTempo && BigInt(quoteAmountUnits) > 0n
         ? BigInt(quoteAmountUnits) + TEMPO_HOP_FEE_RESERVE_UNITS
         : BigInt(quoteAmountUnits);
+      let usdcBal;
+      if (quoteIsTempo) {
+        const readTok = typeof safeRuntime?.readTokenBalanceUnits === "function"
+          ? safeRuntime.readTokenBalanceUnits
+          : null;
+        const eoaAddr = secrets?.agentEthPrivHex
+          ? privateKeyToAccount(
+              secrets.agentEthPrivHex.startsWith("0x") ? secrets.agentEthPrivHex : `0x${secrets.agentEthPrivHex}`,
+            ).address
+          : walletRecord.agentEthEoa;
+        const [eoaBal, safeTempoBal] = readTok
+          ? await Promise.all([
+              eoaAddr ? readTok(eoaAddr, quoteTarget.asset, Number(quoteTarget.chainId)).catch(() => 0n) : 0n,
+              readTok(walletRecord.safeAddress, quoteTarget.asset, Number(quoteTarget.chainId)).catch(() => 0n),
+            ])
+          : [0n, 0n];
+        usdcBal = eoaBal >= safeTempoBal ? eoaBal : safeTempoBal;
+      } else {
+        usdcBal =
+          prefBalances?.usdcUnits ??
+          (await safeRuntime.readUsdcBalanceUnits(walletRecord.safeAddress));
+      }
       const nativePayable = usdcBal >= requiredUnits;
       let crossRail = false;
-      if (!nativePayable && !quoteIsTempo && arkadeRuntime && ensureRailFunded) {
-        const arkBal =
-          prefBalances?.sats ??
-          (await arkadeRuntime.readBalance(walletRecord).then((b) => b.sats).catch(() => 0n));
-        if (arkBal > 0n) crossRail = true;
+      let fundedFrom = null;
+      if (!nativePayable && ensureRailFunded) {
+        if (quoteIsTempo && Number(quoteTarget.chainId) === TEMPO_MAINNET_CHAIN_ID) {
+          const baseBal =
+            prefBalances?.usdcUnits ??
+            (await safeRuntime.readUsdcBalanceUnits(walletRecord.safeAddress).catch(() => 0n));
+          if (baseBal >= requiredUnits + RELAY_FEE_ESTIMATE_UNITS) {
+            crossRail = true;
+            fundedFrom = "base_usdc";
+          } else if (arkadeRuntime) {
+            const arkBal =
+              prefBalances?.sats ??
+              (await arkadeRuntime.readBalance(walletRecord).then((b) => b.sats).catch(() => 0n));
+            if (arkBal > 0n) {
+              crossRail = true;
+              fundedFrom = "arkade";
+            }
+          }
+        } else if (!quoteIsTempo && arkadeRuntime) {
+          const arkBal =
+            prefBalances?.sats ??
+            (await arkadeRuntime.readBalance(walletRecord).then((b) => b.sats).catch(() => 0n));
+          if (arkBal > 0n) {
+            crossRail = true;
+            fundedFrom = "arkade";
+          }
+        }
       }
       const overCap = isUsdcOverCap(quoteAmountUnits);
       const q = selected.kind === "x402" ? quoteOffer(selected.offer) : quoteMppOffer(quoteTarget);
@@ -601,7 +639,7 @@ export function createPrfHttp402Payer({
         dry_run: true,
         protocol: selected.kind,
         rail: "usdc",
-        ...(crossRail ? { cross_rail: true, funded_from: "arkade" } : {}),
+        ...(crossRail ? { cross_rail: true, funded_from: fundedFrom || "arkade" } : {}),
         amount_units: quoteAmountUnits,
         over_cap: overCap,
         quote: q,
@@ -831,17 +869,47 @@ export function createPrfHttp402Payer({
         if (maxSats !== undefined && maxSats !== null) err.maxSats = Number(maxSats);
         throw err;
       }
-      if (offerIsTempo && offerAmountUnits > 0n && typeof safeRuntime.readTokenBalanceUnits === "function") {
-        const tempoBal = await safeRuntime
-          .readTokenBalanceUnits(walletRecord.safeAddress, offer.asset, offerChainId)
-          .catch(() => null);
-        const needed = offerAmountUnits + TEMPO_HOP_FEE_RESERVE_UNITS;
-        if (tempoBal !== null && tempoBal < needed) {
-          const err = new Error(
-            `insufficient_tempo_balance: Safe ${walletRecord.safeAddress} holds ${tempoBal} units of ${offer.asset} on Tempo (chain ${offerChainId}), need ${needed} (${offerAmountUnits} payment + ${TEMPO_HOP_FEE_RESERVE_UNITS} fee reserve).`,
-          );
-          err.code = "insufficient_tempo_balance";
-          throw err;
+      let hopAmountOverride = null;
+      let skipHop = false;
+      if (offerIsTempo && offerAmountUnits > 0n) {
+        const readTok = typeof safeRuntime.readTokenBalanceUnits === "function"
+          ? safeRuntime.readTokenBalanceUnits
+          : null;
+        const neededOnEoa = offerAmountUnits + TEMPO_HOP_FEE_RESERVE_UNITS;
+        const eoaBal = readTok
+          ? await readTok(agentAccount.address, offer.asset, offerChainId).catch(() => 0n)
+          : 0n;
+        if (eoaBal >= neededOnEoa) {
+          skipHop = true;
+        } else {
+          const shortfall = neededOnEoa - eoaBal;
+          const safeTempoBal = readTok
+            ? await readTok(walletRecord.safeAddress, offer.asset, offerChainId).catch(() => null)
+            : null;
+          if (safeTempoBal !== null && safeTempoBal >= shortfall) {
+            hopAmountOverride = shortfall;
+          } else if (offerChainId === TEMPO_MAINNET_CHAIN_ID && ensureRailFunded) {
+            bridged = await ensureRailFunded({
+              walletRecord,
+              secrets,
+              targetRail: "tempo",
+              recipient: agentAccount.address,
+              token: offer.asset,
+              chainId: offerChainId,
+              neededUnits: shortfall,
+              neededTotalUnits: neededOnEoa,
+              maxAmountUnits,
+              maxSats,
+              opId: `${opId}:${hopSuffix}`,
+            });
+            skipHop = true;
+          } else if (safeTempoBal !== null) {
+            const err = new Error(
+              `insufficient_tempo_balance: Safe ${walletRecord.safeAddress} holds ${safeTempoBal} units (Agent EOA holds ${eoaBal}) of ${offer.asset} on Tempo (chain ${offerChainId}), need ${neededOnEoa} (${offerAmountUnits} payment + ${TEMPO_HOP_FEE_RESERVE_UNITS} fee reserve).`,
+            );
+            err.code = "insufficient_tempo_balance";
+            throw err;
+          }
         }
       }
       let hopTxHash = null;
@@ -854,18 +922,20 @@ export function createPrfHttp402Payer({
             ? { name: "USD Coin", version: "2" }
             : undefined,
         feeReserve: offerIsTempo ? TEMPO_HOP_FEE_RESERVE_UNITS : 0n,
-        hop: async (_token, amount) => {
-          const hopped = await safeRuntime.transferToken({
-            walletRecord: safeWalletRow,
-            agentEthPrivateKeyHex: secrets.agentEthPrivHex,
-            to: agentAccount.address,
-            amountUnits: amount,
-            opId: `${opId}:${hopSuffix}`,
-            chainId: offerChainId,
-            token: offer.asset,
-          });
-          hopTxHash = hopped.txHash;
-        },
+        hop: skipHop
+          ? null
+          : async (_token, amount) => {
+              const hopped = await safeRuntime.transferToken({
+                walletRecord: safeWalletRow,
+                agentEthPrivateKeyHex: secrets.agentEthPrivHex,
+                to: agentAccount.address,
+                amountUnits: hopAmountOverride ?? amount,
+                opId: `${opId}:${hopSuffix}`,
+                chainId: offerChainId,
+                token: offer.asset,
+              });
+              hopTxHash = hopped.txHash;
+            },
         getClient: (chainId) => safeRuntime.clientForChain(chainId),
         fetchPaid: async (credentialHeader) => {
           const res = await merchantFetch(url, {
@@ -915,7 +985,7 @@ export function createPrfHttp402Payer({
       paid: true,
       protocol: "mpp",
       rail: "usdc",
-      ...(bridged ? { funded_from: "arkade", bridged } : {}),
+      ...(bridged ? { funded_from: bridged.from || "arkade", bridged } : {}),
       http_status: second.status,
       amount_units: finalOffer.amount,
       asset: finalOffer.asset,

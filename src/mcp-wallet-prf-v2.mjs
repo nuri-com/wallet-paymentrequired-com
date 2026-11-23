@@ -1,7 +1,7 @@
 // v2 Nuri Passkey PRF + Dual-Rail (2-of-4 Base Safe USDC + 2-of-2 Arkade/Lightning)
 // coordinator for the 4-action MCP `wallet` tool (`balance`, `receive`, `pay`, `history`).
 import { randomUUID } from "node:crypto";
-import { getAddress } from "viem";
+import { encodeFunctionData, getAddress, parseAbi } from "viem";
 import { isValidArkAddress } from "@arkade-os/sdk";
 import { createAgentArkadeRuntime } from "./agent-arkade-v2.mjs";
 import { createAgentCosignerClient } from "./agent-cosigner-client.mjs";
@@ -45,6 +45,8 @@ const HTTPS_URL_RE = /^https:\/\/.+/i;
 const BOLT11_RE = /^(?:lightning:)?ln(?:bc|tb|bcrt|tbs)[0-9a-z]+$/i;
 const LN_ADDRESS_RE = /^(?:lightning:)?[a-z0-9._+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
 const DECIMAL_AMOUNT_RE = /^(0|[1-9][0-9]{0,71})(\.[0-9]{1,6})?$/;
+const ERC20_TRANSFER_ABI = parseAbi(["function transfer(address to, uint256 value) returns (bool)"]);
+const DEFAULT_RELAY_API_URL = "https://api.relay.link";
 
 export const DEFAULT_GRANT_CONNECT_TIMEOUT_MS = 24 * 60 * 60_000;
 
@@ -126,6 +128,7 @@ export function createPrfWalletCoordinator({
   autoClaimIntervalMs = 2_500,
   autoClaimTtlMs = 10 * 60_000,
   grantConnectTimeoutMs,
+  relayApiUrl,
 } = {}) {
   const configuredGrantTimeout =
     grantConnectTimeoutMs ??
@@ -433,9 +436,192 @@ export function createPrfWalletCoordinator({
     };
   }
 
-  async function ensureRailFunded({ walletRecord, secrets, targetRail, neededSats, neededUsdcUnits, opId }) {
+  async function bridgeBaseUsdcToTempo({
+    walletRecord,
+    secrets,
+    recipient,
+    token,
+    chainId = 4217,
+    neededUnits,
+    neededTotalUnits,
+    opId,
+  }) {
+    if (Number(chainId) !== 4217) {
+      throw new Error(`tempo_bridge_chain_unsupported:${chainId}`);
+    }
+    const relayBase = String(relayApiUrl || env.RELAY_API_URL || DEFAULT_RELAY_API_URL).replace(/\/+$/, "");
+    const safeAddr = getAddress(walletRecord.safeAddress);
+    const recipientAddr = getAddress(recipient);
+    const destToken = getAddress(token);
+    const needOut = BigInt(neededUnits);
+    const targetTotal = BigInt(neededTotalUnits ?? neededUnits);
+    if (needOut <= 0n) throw new Error("tempo_bridge_amount_invalid");
+
+    async function quoteRelay(inputAmount) {
+      const res = await fetchImpl(`${relayBase}/quote`, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          user: safeAddr,
+          recipient: recipientAddr,
+          originChainId: 8453,
+          destinationChainId: 4217,
+          originCurrency: BASE_USDC_ADDRESS,
+          destinationCurrency: destToken,
+          amount: inputAmount.toString(),
+          tradeType: "EXACT_INPUT",
+          useDepositAddress: true,
+        }),
+      });
+      const text = await res.text();
+      let data = null;
+      try { data = JSON.parse(text); } catch { data = null; }
+      if (!res.ok || !data) {
+        throw new Error(`relay_tempo_quote_failed:${data?.message || res.status}`);
+      }
+      return data;
+    }
+
+    let inputUnits = needOut + 40_000n;
+    let quote = await quoteRelay(inputUnits);
+    let quotedOut = BigInt(quote?.details?.currencyOut?.minimumAmount || quote?.details?.currencyOut?.amount || 0);
+    if (quotedOut < needOut) {
+      inputUnits = inputUnits + (needOut - quotedOut) + 15_000n;
+      quote = await quoteRelay(inputUnits);
+      quotedOut = BigInt(quote?.details?.currencyOut?.minimumAmount || quote?.details?.currencyOut?.amount || 0);
+    }
+    if (quotedOut < needOut) {
+      throw new Error(`relay_tempo_quote_shortfall:need_${needOut}_got_${quotedOut}`);
+    }
+    const feeUnits = inputUnits > quotedOut ? inputUnits - quotedOut : 0n;
+    const maxFeeUnits = needOut > 2_000_000n ? needOut / 4n : 500_000n;
+    if (feeUnits > maxFeeUnits) {
+      throw new Error(`relay_tempo_fee_too_high:fee_${feeUnits}_max_${maxFeeUnits}`);
+    }
+
+    const depositStep = Array.isArray(quote?.steps)
+      ? quote.steps.find((s) => s?.id === "deposit" && s?.kind === "transaction")
+      : null;
+    const depositAddress = depositStep?.depositAddress ? getAddress(depositStep.depositAddress) : null;
+    const item = depositStep?.items?.[0];
+    const tx = item?.data;
+    if (!depositAddress || !tx) {
+      throw new Error("relay_tempo_quote_missing_deposit");
+    }
+    if (Number(tx.chainId) !== 8453 || getAddress(tx.to) !== BASE_USDC_ADDRESS) {
+      throw new Error("relay_tempo_quote_unexpected_origin_tx");
+    }
+    const expectedCalldata = encodeFunctionData({
+      abi: ERC20_TRANSFER_ABI,
+      functionName: "transfer",
+      args: [depositAddress, inputUnits],
+    }).toLowerCase();
+    if (String(tx.data || "").toLowerCase() !== expectedCalldata) {
+      throw new Error("relay_tempo_quote_calldata_mismatch");
+    }
+
+    let arkadeTopUp = null;
+    let baseBal = await ensureSafe().readUsdcBalanceUnits(safeAddr);
+    if (baseBal < inputUnits) {
+      const arkBal = await ensureArkade().readBalance(walletRecord).then((b) => b.sats).catch(() => 0n);
+      if (arkBal > 0n) {
+        arkadeTopUp = await bridgeArkadeToUsdc({
+          walletRecord,
+          secrets,
+          neededUsdcUnits: inputUnits - baseBal,
+          opId: `${opId}:ark2base`,
+        });
+        baseBal = await ensureSafe().readUsdcBalanceUnits(safeAddr);
+      }
+      if (baseBal < inputUnits) {
+        throw new Error(
+          `insufficient_usdc_for_tempo_bridge:need_${unitsToDecimal(String(inputUnits), 6)}_have_${unitsToDecimal(String(baseBal), 6)}`,
+        );
+      }
+    }
+
+    const sent = await ensureSafe().transferUsdc({
+      walletRecord: toSafeWalletRow(walletRecord),
+      agentEthPrivateKeyHex: secrets.agentEthPrivHex,
+      to: depositAddress,
+      amountUnits: inputUnits,
+      opId: `${opId}:relay-tempo`,
+    });
+
+    const requestId = depositStep.requestId || null;
+    const checkEndpoint =
+      typeof item?.check?.endpoint === "string" && item.check.endpoint.startsWith("/")
+        ? item.check.endpoint
+        : requestId
+          ? `/intents/status?requestId=${encodeURIComponent(requestId)}`
+          : null;
+
+    const deadline = Date.now() + bridgeTimeoutMs;
+    let landedBal = 0n;
+    let landed = false;
+    while (Date.now() < deadline) {
+      landedBal = await ensureSafe().readTokenBalanceUnits(recipientAddr, destToken, 4217).catch(() => 0n);
+      if (landedBal >= targetTotal) {
+        landed = true;
+        break;
+      }
+      if (checkEndpoint) {
+        const stRes = await fetchImpl(`${relayBase}${checkEndpoint}`, {
+          headers: { accept: "application/json" },
+        }).catch(() => null);
+        if (stRes?.ok) {
+          const stBody = await stRes.json().catch(() => null);
+          const st = String(stBody?.status || "").toLowerCase();
+          if (st === "failure" || st === "refund") {
+            throw new Error(`relay_tempo_bridge_failed:${st}`);
+          }
+        }
+      }
+      await new Promise((r) => setTimeout(r, Math.min(bridgePollIntervalMs, 1_500)));
+    }
+    if (!landed) {
+      throw new Error(`tempo_bridge_pending:relay_${requestId || "unknown"}`);
+    }
+    return {
+      from: arkadeTopUp ? "arkade" : "base_usdc",
+      to: "tempo",
+      provider: "relay",
+      request_id: requestId,
+      deposit_address: depositAddress,
+      base_tx_hash: sent.txHash || null,
+      sent_usdc: unitsToDecimal(String(inputUnits), 6),
+      received_tempo_units: landedBal.toString(),
+      ...(arkadeTopUp ? { upstream_bridge: arkadeTopUp } : {}),
+    };
+  }
+
+  async function ensureRailFunded({
+    walletRecord,
+    secrets,
+    targetRail,
+    neededSats,
+    neededUsdcUnits,
+    recipient,
+    token,
+    chainId,
+    neededUnits,
+    neededTotalUnits,
+    opId,
+  }) {
     if (targetRail === "lightning") {
       return await bridgeUsdcToArkade({ walletRecord, secrets, neededSats, opId });
+    }
+    if (targetRail === "tempo") {
+      return await bridgeBaseUsdcToTempo({
+        walletRecord,
+        secrets,
+        recipient,
+        token,
+        chainId,
+        neededUnits,
+        neededTotalUnits,
+        opId,
+      });
     }
     return await bridgeArkadeToUsdc({ walletRecord, secrets, neededUsdcUnits, opId });
   }

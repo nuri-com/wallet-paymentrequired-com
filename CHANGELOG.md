@@ -5,6 +5,19 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — Seamless Base USDC / Arkade -> Tempo MPP auto-bridge via Relay (2026-11-23)
+
+- Auto-fund Tempo mainnet (`4217`) MPP calls from **Base USDC** (or **Arkade/Lightning** via
+  existing Arkade → Base USDC bridge) using Relay's deposit-address flow (`POST /quote`,
+  `useDepositAddress: true`) straight to the wallet's **Agent EOA** (`src/mcp-wallet-prf-v2.mjs`,
+  `src/agent-lightning-pay.mjs`, `src/safe-pay-mpp.mjs`). Strictly verifies Relay origin chain,
+  Base USDC token address, ERC-20 `transfer(depositAddress, amount)` calldata, and fee ceiling
+  before signing a plain Base Safe USDC transfer (no Tempo Safe deployment or cosigner changes
+  needed).
+- Lower Tempo EOA gas buffer from `$2.00` to `$0.03` (`30_000n`, ~100x live Tempo `transferWithMemo`
+  gas), reuse any existing Tempo balance on the Agent EOA before hopping or bridging, and reflect
+  Base-funded Tempo payability in `dry_run`.
+
 ## Unreleased — Tempo MPP feeToken & two-step credit-proof fix (2026-11-23)
 
 - Fix `ensureSafeDeployed` missing `feeToken` parameter when deploying a counterfactual PRF Safe

@@ -3,7 +3,8 @@
 The wallet service of paymentrequired.com, served at `wallet.paymentrequired.com`. It runs the
 4-action dual-rail `wallet` MCP tool (`src/mcp-wallet-tool.mjs` + `src/mcp-wallet-prf-v2.mjs`):
 **`balance`**, **`receive`**, **`pay`**, and **`history`** across **Base USDC** (`x402`, EVM `MPP`,
-direct `0x` transfers) and **Bitcoin Lightning / Arkade** (`L402`, Lightning `MPP`, `BOLT11`,
+direct `0x` transfers, plus auto-bridged **Tempo `4217` MPP** via Relay from Base USDC or Arkade)
+and **Bitcoin Lightning / Arkade** (`L402`, Lightning `MPP`, `BOLT11`,
 Lightning Address `LNURL-pay`, and native `ark1` VTXOs via Arkade Intents — zero Boltz).
 
 New wallets onboard with a single vendor-independent **Nuri Passkey PRF** tap on `connect.nuri.com`

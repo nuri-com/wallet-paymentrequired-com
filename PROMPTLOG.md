@@ -3,6 +3,11 @@
 
 ## 2026-11-23 — Emin; recorded by Antigravity
 
+- "tell me if i can just fund base usdc or arkade and you then do the rest ... keep base usdc but
+  tempo mpp still works auto ... can we not test the tempo payment and the treg.to?" → added
+  Relay Base USDC (and Arkade → Base USDC) → Tempo (`4217`) Agent EOA auto-bridge with strict
+  calldata/fee verification, `$0.03` Tempo EOA fee buffer, Agent EOA balance reuse, and README
+  update.
 - Live `treg.to` MPP test hit `feeToken is not defined` on Tempo Safe deploy and ran a hop for
   treg's free `amount: "0"` EIP-712 proof challenge → fixed `ensureSafeDeployed(..., feeToken)`,
   added `readTokenBalanceUnits`, skipped hops on `amount === 0`, and added two-step MPP

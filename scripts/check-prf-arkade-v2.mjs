@@ -1678,7 +1678,7 @@ try {
     );
     assert.equal(tregStep, 2, "must submit free amount=0 proof before receiving paid 402");
 
-    // Within cap, 0 Tempo balance fails cleanly with insufficient_tempo_balance before any hop
+    // Within cap, 0 Tempo balance without bridge fails cleanly with insufficient_tempo_balance before any hop
     await assert.rejects(
       () => tregPayer.payHttpResource({
         walletRecord: fakeWalletRec,
@@ -1689,6 +1689,50 @@ try {
       }),
       (err) => err.code === "insufficient_tempo_balance",
     );
+
+    // With ensureRailFunded (Base USDC -> Tempo Relay bridge), dry_run reports cross_rail payable
+    let relayBridgeCalls = [];
+    const tregBridgedPayer = createPrfHttp402Payer({
+      safeRuntime: {
+        publicClient: { readContract: async () => 0n },
+        clientForChain: () => ({ chain: { id: 4217 } }),
+        readUsdcBalanceUnits: async () => 560_000n, // funded on Base
+        readTokenBalanceUnits: async () => 0n,      // 0 on Tempo
+        transferToken: async () => { throw new Error("must_not_hop_when_relay_bridges_to_eoa"); },
+      },
+      ensureRailFunded: async (req) => {
+        relayBridgeCalls.push(req);
+        return { from: "base_usdc", to: "tempo", provider: "relay", sent_usdc: "0.18", received_tempo_units: String(req.neededTotalUnits) };
+      },
+      merchantFetch: async (_url, { headers }) => {
+        if (!headers.Authorization) {
+          return {
+            status: 402,
+            headers: {
+              "www-authenticate": `${Challenge.serialize(mppTempoProofChallenge)}, ${Challenge.serialize(mppTempoPaidChallenge)}`,
+            },
+            bytes: Buffer.from('{"detail":{"error":"payment_required"}}'),
+          };
+        }
+        return {
+          status: 402,
+          headers: { "www-authenticate": Challenge.serialize(mppTempoPaidChallenge) },
+          bytes: Buffer.from('{"detail":{"error":"credit_insufficient"}}'),
+        };
+      },
+    });
+    const tregDryBridged = await tregBridgedPayer.payHttpResource({
+      walletRecord: fakeWalletRec,
+      secrets: { agentEthPrivHex: testTempoAgentPriv },
+      url: "https://treg.example.com/call/test",
+      maxAmountUnits: 200_000n,
+      dryRun: true,
+      opId: "treg-dry-bridge",
+    });
+    assert.equal(tregDryBridged.amount_units, "110000");
+    assert.equal(tregDryBridged.cross_rail, true);
+    assert.equal(tregDryBridged.funded_from, "base_usdc");
+    assert.equal(tregDryBridged.payable, true);
   }
   // Step I: Pay HTTP 402 via EVM MPP (Safe -> Agent EOA hop + stock `mppx`)
   const paidMppEvm = await walletTool.call({
