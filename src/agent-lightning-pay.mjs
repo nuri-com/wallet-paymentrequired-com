@@ -25,8 +25,8 @@ import { parseSolanaChallenge, payWithSolana, quoteSolanaOffer, readSolanaUsdcBa
 
 const denied = new BlockList();
 // Tempo has no gas coin: the Agent EOA pays its transferWithMemo fee in the token
-// itself (~$0.0003 at 0.6 gwei), so keep a $0.03 buffer on the Agent EOA.
-const TEMPO_HOP_FEE_RESERVE_UNITS = 30_000n;
+// itself (~$0.0003 at 0.6 gwei), so keep a $0.003 buffer on the Agent EOA.
+const TEMPO_HOP_FEE_RESERVE_UNITS = 3_000n;
 const TEMPO_MAINNET_CHAIN_ID = 4217;
 const RELAY_FEE_ESTIMATE_UNITS = 40_000n;
 for (const [ip, bits] of [

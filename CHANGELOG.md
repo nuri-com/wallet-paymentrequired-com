@@ -14,8 +14,8 @@ flowchart LR
   Base USDC token address, ERC-20 `transfer(depositAddress, amount)` calldata, and fee ceiling
   before signing a plain Base Safe USDC transfer (no Tempo Safe deployment or cosigner changes
   needed).
-- Lower Tempo EOA gas buffer from `$2.00` to `$0.03` (`30_000n`, ~100x live Tempo `transferWithMemo`
-  gas), enforce Relay's `$0.10` (`100_000n`) minimum deposit-address quote floor so tiny top-up
+- Lower Tempo EOA gas buffer from `$2.00` to `$0.003` (`3_000n`, ~10x live Tempo `transferWithMemo`
+  gas), enforce Relay's `$0.055` (`55_000n`) minimum deposit-address quote floor so tiny top-up
   shortfalls never fail with `< 50000`, reuse any existing Tempo balance on the Agent EOA before
   hopping or bridging, and reflect Base-funded Tempo payability in `dry_run`.
 
