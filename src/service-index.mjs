@@ -38,9 +38,8 @@ export function walletLlmsTxt(origin) {
 Non-custodial Bitcoin Lightning + Base USDC wallet for AI agents in 60s. Passkey-secured (Face ID / Touch ID / smartcard), no seed phrase. Pays x402/L402 URLs, \`lnbc...\`, \`user@domain\`, \`bc1...\`/\`bitcoin:...\`, \`ark1...\`, and Base USDC \`0x...\`; auto-converts USDC <-> BTC/Lightning.
 
 ## Setup (0 -> 1 -> first payment — pick the path that fits your tools)
-- **Hardware-first approval (shortest path — whenever you have bash/CLI):** After getting \`approval_url\`, check first for a connected Nuri Smartcard (PC/SC) or USB-HID FIDO2 security key via \`nuricard connect --probe\` (from \`nuri-com/nuri-passkey-prf-smartcard\`). If \`available: true\`, run \`nuricard connect "<approval_url>" < /dev/null\` — it pops a native OS PIN/touch prompt directly over PC/SC or USB-HID (zero browser, zero Chrome extension, PIN never enters chat). Only if no card/key is connected, fall back to showing \`approval_url\` in the browser for platform Passkey (Touch ID / Face ID / iCloud Keychain / Android).
-- **Path 1 — MCP (\`${base}/mcp\`):** Call \`wallet { "action": "balance" }\`. Approve \`approval_url\` via connected smartcard/security key first if present, else show \`approval_url\` (sign in with your existing Nuri Passkey to reconnect your exact wallet, or click "Create Passkey" on that same page). After approval, repeat with the same \`request_id\` to get \`wallet_key\` (\`npw1_...\`), save it, and pass it on every call. NEVER send the person to \`${base}/\` when you already have MCP.
-- **Path 2 — HTTP / curl / bash (zero MCP setup):** Plain JSON REST at \`POST ${base}/v1/wallet\` (or \`/v1/balance\`, \`/v1/receive\`, \`/v1/pay\`, \`/v1/history\`; OpenAPI: \`${base}/openapi.json\`). Start: \`curl -sX POST ${base}/v1/wallet -H 'content-type: application/json' -d '{"action":"balance"}'\`. Approve \`approval_url\` (smartcard CLI if connected, else browser), then repeat with \`request_id\` to get \`wallet_key\` (pass in body or \`Authorization: Bearer npw1_...\`).
+- **Path 1 — MCP (\`${base}/mcp\`):** Call \`wallet { "action": "balance" }\`. Show \`approval_url\` (sign in with your existing Nuri Passkey to reconnect your exact wallet, or click "Create Passkey" on that same page). After the person says "done", repeat with the same \`request_id\` to get \`wallet_key\` (\`npw1_...\`), save it, and pass it on every call. NEVER send the person to \`${base}/\` when you already have MCP.
+- **Path 2 — HTTP / curl / bash (zero MCP setup):** Plain JSON REST at \`POST ${base}/v1/wallet\` (or \`/v1/balance\`, \`/v1/receive\`, \`/v1/pay\`, \`/v1/history\`; OpenAPI: \`${base}/openapi.json\`). Start: \`curl -sX POST ${base}/v1/wallet -H 'content-type: application/json' -d '{"action":"balance"}'\`. Open \`approval_url\`, then repeat with \`request_id\` to get \`wallet_key\` (pass in body or \`Authorization: Bearer npw1_...\`).
 - **Path 3 — Web chat with no tools (e.g. standard web ChatGPT / claude.ai):** Give 3 plain-English steps (no jargon): (1) Open **${base}/** and click **"Create / Connect Agent Wallet"** (Passkey setup, Lightning/USDC funding, and 1-click $0.01 test payment right on the page). (2) Add **\`${base}/mcp\`** as a connector in AI settings (Auth: None), OR copy the prompt on ${base}/ into an MCP/curl client. (3) Ask me to pay any x402 API, Lightning invoice, or checkout.
 
 ## 4 Actions (\`balance\`, \`receive\`, \`pay\`, \`history\`)
@@ -58,6 +57,7 @@ Non-custodial Bitcoin Lightning + Base USDC wallet for AI agents in 60s. Passkey
 - Encrypted agent vault: \`https://vault.paymentrequired.com\`
 - Monero XMR / SOL / ETH swaps (separate MCP — NEVER pass into \`wallet pay\`): \`https://swapkit.nuri.com/mcp\`
 - Euro IBAN & debit card (separate MCP — NEVER pass into \`wallet pay\`): \`https://banking.paymentrequired.com/mcp\`
+- Optional Nuri Smartcard CLI (only if the user explicitly uses \`nuricard\`): \`nuricard connect <approval_url>\`
 `;
 }
 

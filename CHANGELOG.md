@@ -5,6 +5,10 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — Keep `/skill.md` & `/llms.txt` setup simple and browser-Passkey-first (2026-11-24)
+
+- Keep `## Setup` in `/skill.md` and `/llms.txt` (`src/service-index.mjs`) strictly simple and browser-Passkey-first so normal AI agents are never confused by hardware-wallet steps; move optional `nuricard connect` note to a 1-line Companion Services footnote (only if the user explicitly uses `nuricard`), while keeping `lnurl_username` (`username@nuriwallet.com`) documented under `balance` / `receive`.
+
 ## Unreleased — Hardware-first smartcard/FIDO2 onboarding cascade in `/skill.md` & `/llms.txt` (2026-11-24)
 
 - Update `/skill.md` and `/llms.txt` (`src/service-index.mjs`) so AI agents check for a connected PC/SC Nuri Smartcard or USB-HID FIDO2 security key first (`nuricard connect --probe` / `nuricard connect <approval_url>` — zero browser/extension, native OS PIN prompt) and fall back to browser Passkey `approval_url` only when no hardware key is present; also document `lnurl_username` (`username@nuriwallet.com`) registration and `lnurl` reporting in `balance`.
