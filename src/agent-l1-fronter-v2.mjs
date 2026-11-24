@@ -494,6 +494,16 @@ export function createEsploraL1Client({
   };
 }
 
+function isPreBroadcastL1DeferError(err) {
+  const msg = String(err?.message || err || "");
+  return (
+    msg === "fronter_l1_pool_insufficient_liquidity" ||
+    msg === "fronter_l1_hot_wallet_not_configured" ||
+    msg === "fronter_l1_payout_below_dust_after_fee" ||
+    msg.startsWith("l1_fee_estimation_unavailable")
+  );
+}
+
 function isAlreadyBroadcastError(err) {
   const msg = String(err?.responseText || err?.message || "").toLowerCase();
   return (
@@ -862,6 +872,15 @@ export function openL1FronterLedger(dbPath = ":memory:") {
     };
   }
 
+  function listWalletsWithPendingReceive(minSats) {
+    return db
+      .prepare(
+        "SELECT wallet_id FROM nuri_l1_fronter_ledger WHERE debt_sats = 0 AND pending_receive_sats >= ? ORDER BY updated_at_ms ASC LIMIT 20",
+      )
+      .all(Math.max(1, Math.trunc(Number(minSats || 1))))
+      .map((r) => String(r.wallet_id));
+  }
+
   function runTx(fn) {
     db.exec("BEGIN IMMEDIATE;");
     try {
@@ -880,6 +899,7 @@ export function openL1FronterLedger(dbPath = ":memory:") {
     runTx,
     getLedger,
     setLedger,
+    listWalletsWithPendingReceive,
     getSwap,
     listSwapsByStatus,
     reserveSwap,
@@ -962,16 +982,28 @@ export function createServerArkadeLiquidityPool({
   }
 
   async function withRfq(fn) {
-    const transport = nostrRfqTransport({
-      relays,
-      solverPubkey,
-      secretKey: randomBytes(32),
-      timeoutMs: 25_000,
-    });
-    try {
-      return await fn(transport);
-    } finally {
-      await transport.close?.().catch?.(() => {});
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const transport = nostrRfqTransport({
+        relays,
+        solverPubkey,
+        secretKey: randomBytes(32),
+        timeoutMs: 25_000,
+      });
+      try {
+        return await fn(transport);
+      } catch (err) {
+        const msg = String(err?.message || err || "").toLowerCase();
+        const transient =
+          msg.includes("relay") ||
+          msg.includes("timeout") ||
+          msg.includes("timed out") ||
+          msg.includes("econn") ||
+          msg.includes("socket");
+        if (!transient || attempt === 3) throw err;
+        await new Promise((r) => setTimeout(r, 750 * attempt));
+      } finally {
+        await transport.close?.().catch?.(() => {});
+      }
     }
   }
 
@@ -1641,10 +1673,103 @@ export function createAgentL1FronterRuntime({
   }
 
   /**
-   * Crash-recovery reconciler: completes any swap whose LN preimage was already obtained
-   * (`status = 'broadcast_pending'`) so server L1 replenishment is never lost on crash or Esplora 503.
+   * Reconciles timed-out VHTLCs (`status = 'paying_ln'`) and crash-held L1 txs (`status = 'broadcast_pending'`).
    */
   async function reconcilePendingBroadcasts(walletRecord) {
+    const inFlight = store.listSwapsByStatus(walletRecord.walletId, ["paying_ln"]);
+    if (inFlight.length > 0 && typeof pool.checkArkadeLockupFate === "function") {
+      for (const row of inFlight) {
+        if (!row.swap_pk_script_hex || !row.payment_hash) continue;
+        try {
+          const liveFate = await pool.checkArkadeLockupFate({
+            swapPkScriptHex: row.swap_pk_script_hex,
+            paymentHash: row.payment_hash,
+          });
+          if (
+            liveFate?.preimageHex &&
+            bytesToHex(sha256(hexToBytes(liveFate.preimageHex))) === row.payment_hash
+          ) {
+            store.upsertSwap({
+              opId: row.op_id,
+              walletId: row.wallet_id,
+              direction: row.direction,
+              mode: row.mode,
+              status: row.l1_raw_hex && row.l1_txid ? "broadcast_pending" : "done",
+              paymentHash: row.payment_hash,
+              preimageHex: liveFate.preimageHex,
+              bolt11: row.bolt11,
+              amountSats: row.amount_sats,
+              feeSats: row.fee_sats,
+              serviceFeeSats: row.service_fee_sats,
+              debtDeltaSats: row.debt_delta_sats,
+              l1Txid: row.l1_txid,
+              l1RawHex: row.l1_raw_hex,
+              spentOutpoints: row.spent_outpoints_json ? JSON.parse(row.spent_outpoints_json) : undefined,
+              changeOutpoints: row.change_outpoints_json ? JSON.parse(row.change_outpoints_json) : undefined,
+              creditUsedSats: row.credit_used_sats,
+              outputPaddingSats: row.output_padding_sats,
+              arkTxid: row.ark_txid,
+              swapPkScriptHex: row.swap_pk_script_hex,
+            });
+          } else if (liveFate?.fate === "returned" || liveFate?.fate === "exited") {
+            const errMsg = `fronter_arkade_lightning_send_${liveFate.fate}`;
+            if (row.mode === "lend" || row.mode === "micro_credit") {
+              const debtAdded = Math.max(0, Number(row.debt_delta_sats || 0));
+              const creditSpent = Math.max(0, Number(row.credit_used_sats || 0));
+              store.runTx(() => {
+                const cur = store.getLedger(walletRecord.walletId);
+                store.setLedger(walletRecord.walletId, {
+                  debtSats: Math.max(0, cur.debtSats - debtAdded),
+                  pendingReceiveSats: cur.pendingReceiveSats + creditSpent,
+                });
+                store.upsertSwap({
+                  opId: row.op_id,
+                  walletId: row.wallet_id,
+                  direction: row.direction,
+                  mode: row.mode,
+                  status: "failed",
+                  paymentHash: row.payment_hash,
+                  bolt11: row.bolt11,
+                  amountSats: row.amount_sats,
+                  feeSats: 0,
+                  arkTxid: row.ark_txid,
+                  swapPkScriptHex: row.swap_pk_script_hex,
+                  error: errMsg,
+                });
+              });
+              await cosignerClient
+                ?.releaseL1Spend?.({ cred_id_b64u: walletRecord.credIdB64u, index: walletRecord.slotIndex, op_id: row.op_id })
+                .catch(() => {});
+            } else {
+              await cosignerClient
+                ?.releaseL1Outpoints?.({
+                  cred_id_b64u: walletRecord.credIdB64u,
+                  index: walletRecord.slotIndex,
+                  op_id: row.op_id,
+                  spending_txid: row.l1_txid,
+                })
+                .catch(() => {});
+              store.upsertSwap({
+                opId: row.op_id,
+                walletId: row.wallet_id,
+                direction: row.direction,
+                mode: row.mode,
+                status: "failed",
+                paymentHash: row.payment_hash,
+                bolt11: row.bolt11,
+                amountSats: row.amount_sats,
+                feeSats: 0,
+                l1Txid: row.l1_txid,
+                arkTxid: row.ark_txid,
+                swapPkScriptHex: row.swap_pk_script_hex,
+                error: errMsg,
+              });
+            }
+          }
+        } catch {}
+      }
+    }
+
     const pending = store.listSwapsByStatus(walletRecord.walletId, ["broadcast_pending"]);
     if (pending.length === 0) return;
     const l1 = await deriveWalletScript(walletRecord);
@@ -2069,6 +2194,23 @@ export function createAgentL1FronterRuntime({
                 .releaseL1Spend({ cred_id_b64u: walletRecord.credIdB64u, index: walletRecord.slotIndex, op_id: opId })
                 .catch(() => {});
             }
+          } else {
+            store.upsertSwap({
+              opId,
+              walletId: walletRecord.walletId,
+              direction: "out",
+              mode: "micro_credit",
+              status: "paying_ln",
+              paymentHash: facts.paymentHash,
+              bolt11: cleanInvoice,
+              amountSats: facts.amountSats,
+              feeSats: quoteCtx.lnFeeSats + quoteCtx.serviceFeeSats,
+              serviceFeeSats: Number(quoteCtx.serviceFeeSats || 0),
+              creditUsedSats: creditUsed,
+              arkTxid: err?.arkTxid || null,
+              swapPkScriptHex: err?.swapPkScriptHex || null,
+              error: err?.message || String(err),
+            });
           }
           throw err;
         }
@@ -2184,6 +2326,24 @@ export function createAgentL1FronterRuntime({
                   .releaseL1Spend({ cred_id_b64u: walletRecord.credIdB64u, index: walletRecord.slotIndex, op_id: opId })
                   .catch(() => {});
               }
+            } else {
+              store.upsertSwap({
+                opId,
+                walletId: walletRecord.walletId,
+                direction: "out",
+                mode: "lend",
+                status: "paying_ln",
+                paymentHash: facts.paymentHash,
+                bolt11: cleanInvoice,
+                amountSats: facts.amountSats,
+                feeSats: quoteCtx.lnFeeSats + quoteCtx.serviceFeeSats,
+                serviceFeeSats: Number(quoteCtx.serviceFeeSats || 0),
+                debtDeltaSats: neededAfterCredit,
+                creditUsedSats: creditUsed,
+                arkTxid: err?.arkTxid || null,
+                swapPkScriptHex: err?.swapPkScriptHex || null,
+                error: err?.message || String(err),
+              });
             }
             throw err;
           }
@@ -2431,12 +2591,7 @@ export function createAgentL1FronterRuntime({
           });
         } catch (err) {
           const msg = String(err?.message || err || "");
-          const isPreBroadcastDefer =
-            msg === "fronter_l1_pool_insufficient_liquidity" ||
-            msg === "fronter_l1_hot_wallet_not_configured" ||
-            msg === "fronter_l1_payout_below_dust_after_fee" ||
-            msg.startsWith("l1_fee_estimation_unavailable");
-          if (isPreBroadcastDefer) {
+          if (isPreBroadcastL1DeferError(err)) {
             l1PayoutDeferredReason = msg;
           } else {
             // L1 payout broadcast uncertain or failed unexpectedly -> delete claiming reservation so next tick retries safely.
@@ -2734,6 +2889,85 @@ export function createAgentL1FronterRuntime({
     };
   }
 
+  /**
+   * Sweeps deferred/accumulated user pending_receive_sats to their L1 bc1p... once Pool L1 hot wallet covers it.
+   * Never charges the 2% service fee again (already deducted at initial claim).
+   */
+  async function sweepDeferredL1Credits(walletRecord) {
+    return withWalletLock(walletRecord.walletId, async () => {
+      const ledgerState = store.getLedger(walletRecord.walletId);
+      if (ledgerState.debtSats > 0 || ledgerState.pendingReceiveSats < l1SettleFloorSats) {
+        return { swept: false, deferred: false, pendingReceiveSats: ledgerState.pendingReceiveSats };
+      }
+      const l1 = await deriveWalletScript(walletRecord);
+      let payout;
+      try {
+        payout = await pool.sendL1Payout({
+          toScriptHex: l1.scriptPubKeyHex,
+          amountSats: ledgerState.pendingReceiveSats,
+        });
+      } catch (err) {
+        if (isPreBroadcastL1DeferError(err)) {
+          return { swept: false, deferred: true, reason: String(err?.message || err) };
+        }
+        throw err;
+      }
+      store.runTx(() => {
+        store.addTrustedUtxo({
+          walletId: walletRecord.walletId,
+          txid: payout.txid,
+          vout: payout.vout,
+          amountSats: payout.payoutSats,
+          scriptPubKeyHex: l1.scriptPubKeyHex,
+          sourceKind: "fronter_payout",
+          ancestorDepth: 1,
+        });
+        store.setLedger(walletRecord.walletId, { debtSats: 0, pendingReceiveSats: 0 });
+        store.upsertSwap({
+          opId: `l1-sweep-${payout.txid.slice(0, 16)}`,
+          walletId: walletRecord.walletId,
+          direction: "in",
+          mode: "l1_0conf_sweep",
+          status: "done",
+          amountSats: payout.payoutSats,
+          feeSats: payout.feeSats,
+          serviceFeeSats: 0,
+          debtDeltaSats: 0,
+          l1Txid: payout.txid,
+        });
+      });
+      await cosignerClient
+        ?.registerTrustedL1Outpoint?.({
+          cred_id_b64u: walletRecord.credIdB64u,
+          index: walletRecord.slotIndex,
+          outpoint: `${payout.txid}:${payout.vout}`,
+          source_kind: "fronter_payout",
+          amount_sats: payout.payoutSats,
+        })
+        .catch(() => {});
+      return {
+        swept: true,
+        claimTxid: payout.txid,
+        l1PayoutSats: payout.payoutSats,
+        l1FeeSats: payout.feeSats,
+      };
+    });
+  }
+
+  async function sweepAllDeferredL1Credits(lookupWalletById) {
+    if (typeof lookupWalletById !== "function") return [];
+    const walletIds = store.listWalletsWithPendingReceive(l1SettleFloorSats);
+    const results = [];
+    for (const walletId of walletIds) {
+      try {
+        const w = await lookupWalletById(walletId);
+        if (!w) continue;
+        results.push({ walletId, ...(await sweepDeferredL1Credits(w)) });
+      } catch {}
+    }
+    return results;
+  }
+
   return {
     custodyMode: "l1_0conf",
     network: defaultNet,
@@ -2743,6 +2977,8 @@ export function createAgentL1FronterRuntime({
     payBolt11Invoice,
     createLightningReceive,
     claimLightningReceive,
+    sweepDeferredL1Credits,
+    sweepAllDeferredL1Credits,
     sendOnchainBtc,
     sendArkade,
     checkLightningSendFate,

@@ -5,6 +5,12 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — Reliability hardening #1–#3: deferred L1 auto-sweep, `paying_ln` VHTLC timeout reconciler & Nostr RFQ retry (2026-11-24)
+
+- `#1`: Add `sweepDeferredL1Credits` / `sweepAllDeferredL1Credits` (`src/agent-l1-fronter-v2.mjs`), wired into existing `startLnurlAutoClaim` (`src/mcp-wallet-prf-v2.mjs`) to auto-sweep queued `pending_receive_sats >= l1SettleFloorSats` to the user's `bc1p...` as soon as Pool L1 refills — with zero double-charging of the `2%` service fee.
+- `#2`: Persist `arkTxid` and `swapPkScriptHex` on `LEND` / `micro_credit` `paying_ln` timeouts (`safeToReleaseL1: false`) and extend `reconcilePendingBroadcasts` to query `checkArkadeLockupFate` and automatically refund user `debt_sats` / `pending_receive_sats` on `returned`/`exited` VHTLCs or finalize late-claimed preimages.
+- `#3`: Retry transient Nostr relay/timeout/socket errors in `withRfq` up to 3 attempts; add TEST 19 and TEST 20 in `scripts/check-l1-0conf-fronter.mjs` (`20` offline E2E tests total).
+
 ## Unreleased — Live 24-swap mainnet proof, test sweep & hardening docs (2026-11-24)
 
 - Sync `docs/L1-0CONF-ARKADE-FRONTER.md`, `README.md`, and `PROMPTLOG.md` with the completed 24-swap Bitcoin mainnet proof (`12` out / `12` in, `earnedServiceFeeSats: 705`, `+545` sats net earned profit, all 5 L1 txs confirmed incl. `ad0f15dc...` + `bf79ee2a...` in block `977404`), the `8,255`-sat off-chain test sweep back to Pool Arkade (`4679ef6c...` -> `totalFloatSats: 19,365`, `netFloatEquitySats: 18,800`), the 18-test E2E suite count, and the 5-point Muun-parity production-hardening roadmap.

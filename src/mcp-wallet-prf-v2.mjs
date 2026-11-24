@@ -1304,6 +1304,9 @@ export function createPrfWalletCoordinator({
           const rootHex = db.openLnurlReceiveSecret(handle);
           await claimAndRecordReceive(wallet, rootHex, db.getLightningReceive(row.rfq_id));
         }
+        if (typeof ensureArkade().sweepAllDeferredL1Credits === "function") {
+          await ensureArkade().sweepAllDeferredL1Credits((wid) => db.getWalletById(wid));
+        }
       } catch {
         // Non-fatal: unpaid invoices, operator or solver unreachable.
       }

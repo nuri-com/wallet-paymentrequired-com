@@ -1,6 +1,6 @@
 # Pure-L1 2-of-2 MuSig2+CSV + Server-Only Arkade 0-Conf Lightning Fronter
 
-Implemented in [`src/agent-l1-fronter-v2.mjs`](../src/agent-l1-fronter-v2.mjs), wired into [`src/mcp-wallet-prf-v2.mjs`](../src/mcp-wallet-prf-v2.mjs) and [`src/wallet-server.mjs`](../src/wallet-server.mjs), backed by [`nuri-com/nuri-agent-cosigner`](https://github.com/nuri-com/nuri-agent-cosigner) (`127.0.0.1:8794`), and verified by 18 offline E2E tests in [`scripts/check-l1-0conf-fronter.mjs`](../scripts/check-l1-0conf-fronter.mjs) (run via `npm run check:prf` — covering `2%` bidirectional fees, sub-1 sat/vB Esplora clamping, and `deferred_l1_credit` fallback).
+Implemented in [`src/agent-l1-fronter-v2.mjs`](../src/agent-l1-fronter-v2.mjs), wired into [`src/mcp-wallet-prf-v2.mjs`](../src/mcp-wallet-prf-v2.mjs) and [`src/wallet-server.mjs`](../src/wallet-server.mjs), backed by [`nuri-com/nuri-agent-cosigner`](https://github.com/nuri-com/nuri-agent-cosigner) (`127.0.0.1:8794`), and verified by 20 offline E2E tests in [`scripts/check-l1-0conf-fronter.mjs`](../scripts/check-l1-0conf-fronter.mjs) (run via `npm run check:prf` — covering `2%` bidirectional fees, sub-1 sat/vB Esplora clamping, `deferred_l1_credit`, VHTLC timeout auto-reconciliation, and zero-double-fee deferred L1 auto-sweeps).
 
 ## Why Pure-L1 + Single Server Arkade Pool
 
@@ -83,9 +83,9 @@ Byte-for-byte address derivation was verified against live mainnet `@lennard` (`
 
 Full comparison against Muun Wallet (`apollo` + `libwallet`) and Node.js vs. Go vs. **Rust** hardening roadmap: **[`MUUN-VS-NURI-ARCHITECTURE-AND-RUNTIME-HARDENING.md`](https://github.com/nuri-com/nuri-0conf-bitcoin-lightning-fronter/blob/main/docs/MUUN-VS-NURI-ARCHITECTURE-AND-RUNTIME-HARDENING.md)**.
 
-1. **Automated L1↔Arkade Rebalancer + Cron Sweep of `pending_receive_sats`:** Automatically offboard Arkade VTXOs → Pool L1 (`bc1pge7p...`) whenever L1 hot balance drops below threshold so incoming `>= 1,000`-sat receives settle on-chain immediately instead of falling back to `deferred_l1_credit`, then sweep queued `pending_receive_sats`.
-2. **`LEND` / `micro_credit` VHTLC Timeout Sweeper:** Persist `arkTxid` / `swapPkScriptHex` on `paying_ln` timeouts so background reconciliation auto-refunds user debt if the VHTLC expires (`returned`/`exited`).
-3. **Nostr Multi-Relay Retry + Overflow Routing (SwapKit / BitcoinVN):** Retry RFQ across multiple Nostr relays and route sub-340-sat or whale overflow via optional sidecar / SwapKit / BitcoinVN.
+1. **Deferred L1 Auto-Sweep (Shipped) + Pool Rebalancer:** `sweepAllDeferredL1Credits` automatically sweeps queued `pending_receive_sats >= l1SettleFloorSats` to `bc1p...` inside `startLnurlAutoClaim` once Pool L1 (`bc1pge7p...`) has liquidity; next step adds an automatic Arkade collaborative offboard → Pool L1 trigger whenever L1 drops below threshold.
+2. **`LEND` / `micro_credit` VHTLC Timeout Sweeper (Shipped):** `paying_ln` timeouts now persist `arkTxid` / `swapPkScriptHex` and `reconcilePendingBroadcasts` auto-refunds user debt on `returned`/`exited` VHTLCs or finalizes late preimages.
+3. **Nostr Multi-Relay Retry (Shipped `withRfq` 3x) + Overflow Routing (Parked):** SwapKit / BitcoinVN overflow routing remains parked for zero extra complexity until real whale sends demand it.
 4. **CPFP / Fee-Bumping on `sendL1Payout`:** Mutual CPFP bump support when mempool fees spike mid-confirmation.
 5. **Rust Cosigner & Vault Migration (`>$1k–$5k` TVL):** Rewrite `nuri-agent-cosigner` in Rust (`musig2` compile-time nonce safety + `zeroize`) first, then extract pool signing keys into a Rust daemon leaving Node.js as a keyless edge.
 6. **Cooperative L1-Out Fee Output:** Add an optional basis-point fee output (`>= 330` sats P2TR dust floor) to `sendOnchainBtc` co-signed L1 sends while keeping the unilateral Tapscript CSV exit 100% sovereign and fee-free.

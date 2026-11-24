@@ -871,6 +871,144 @@ async function main() {
       }
     }
 
+    // TEST 19: `LEND` timeout persists swapPkScriptHex & `reconcilePendingBroadcasts` auto-refunds debt on returned VHTLC (or completes on late preimage)
+    {
+      utxosByAddress.set(l1Wallet.address, [{ txid: "f1".repeat(32), vout: 0, value: 25_000, confirmed: true }]);
+      let fateMode = "returned";
+      let releasedOp = null;
+      const lendPreimageHex = "0b".repeat(32);
+      const timeoutPool = {
+        ...serverPool,
+        async payLightningInvoice() {
+          const err = new Error("fronter_arkade_lightning_send_timeout");
+          err.safeToReleaseL1 = false;
+          err.arkTxid = "ark-timeout-lend-1";
+          err.swapPkScriptHex = "5120" + "11".repeat(32);
+          throw err;
+        },
+        async checkArkadeLockupFate({ paymentHash }) {
+          if (fateMode === "claimed") {
+            return { fate: "claimed", preimageHex: lendPreimageHex };
+          }
+          return { fate: fateMode, preimageHex: null };
+        },
+      };
+      const trackedCosigner = {
+        ...cosignerClient,
+        async releaseL1Spend(req) {
+          releasedOp = req.op_id;
+          return { ok: true };
+        },
+      };
+      const lendRecRuntime = createAgentL1FronterRuntime({
+        cosignerClient: trackedCosigner,
+        ledgerPath: ":memory:",
+        esploraClient: esplora,
+        serverPool: timeoutPool,
+        network: "bitcoin",
+        lendMaxSats: 500,
+        maxDebtSats: 10_000,
+        l1SettleFloorSats: 1_000,
+      });
+      try {
+        // 19a: VHTLC timeout -> debt reserved -> returned VHTLC auto-refunds debt on readBalance!
+        const inv19a = makeBolt11({ amountSats: 400, preimageHex: lendPreimageHex });
+        invoicePreimages.set(inv19a.bolt11, inv19a.preimageHex);
+        await assert.rejects(
+          () =>
+            lendRecRuntime.payBolt11Invoice({
+              walletRecord,
+              agentBtcPrivHex: bytesToHex(agentPriv),
+              bolt11: inv19a.bolt11,
+              opId: "op-lend-timeout-return",
+            }),
+          /timeout/,
+        );
+        assert.equal(lendRecRuntime.getLedgerState(walletRecord.walletId).debtSats > 0, true);
+        await lendRecRuntime.readBalance(walletRecord);
+        assert.equal(lendRecRuntime.getLedgerState(walletRecord.walletId).debtSats, 0, "Returned VHTLC MUST auto-refund LEND debt!");
+        assert.equal(releasedOp, "op-lend-timeout-return");
+
+        // 19b: Late claimed VHTLC completes `paying_ln` -> `done` without losing debt state!
+        fateMode = "claimed";
+        await assert.rejects(
+          () =>
+            lendRecRuntime.payBolt11Invoice({
+              walletRecord,
+              agentBtcPrivHex: bytesToHex(agentPriv),
+              bolt11: inv19a.bolt11,
+              opId: "op-lend-timeout-claim",
+            }),
+          /timeout/,
+        );
+        await lendRecRuntime.readBalance(walletRecord);
+        const doneReplay = await lendRecRuntime.payBolt11Invoice({
+          walletRecord,
+          agentBtcPrivHex: bytesToHex(agentPriv),
+          bolt11: inv19a.bolt11,
+          opId: "op-lend-timeout-claim",
+        });
+        assert.equal(doneReplay.status, "done");
+        assert.equal(doneReplay.preimageHex, lendPreimageHex);
+      } finally {
+        lendRecRuntime.close();
+      }
+    }
+
+    // TEST 20: `sweepDeferredL1Credits` / `sweepAllDeferredL1Credits` sweeps queued balance when Pool L1 refills without double-charging fee
+    {
+      utxosByAddress.set(l1Wallet.address, []);
+      let poolL1Refilled = false;
+      const sweepPool = {
+        ...serverPool,
+        async sendL1Payout({ toScriptHex, amountSats }) {
+          if (!poolL1Refilled) throw new Error("fronter_l1_pool_insufficient_liquidity");
+          return serverPool.sendL1Payout({ toScriptHex, amountSats });
+        },
+      };
+      const sweepRuntime = createAgentL1FronterRuntime({
+        cosignerClient,
+        ledgerPath: ":memory:",
+        esploraClient: esplora,
+        serverPool: sweepPool,
+        network: "bitcoin",
+        lendMaxSats: 500,
+        maxDebtSats: 10_000,
+        l1SettleFloorSats: 1_000,
+        sendFeeBps: 200,
+        receiveFeeBps: 200,
+      });
+      try {
+        const rfqWait = await sweepRuntime.createLightningReceive({ walletRecord, amountSats: 10_000 });
+        incomingPaidMap.set(rfqWait.rfqId, 10_000);
+        const deferred = await sweepRuntime.claimLightningReceive({
+          walletRecord,
+          receiveRecord: { ...rfqWait, expectedAmountSats: 10_000 },
+        });
+        assert.equal(deferred.settlementMode, "deferred_l1_credit");
+        assert.equal(sweepRuntime.getLedgerState(walletRecord.walletId).pendingReceiveSats, 9_800);
+
+        // Before refill: sweep safely stays deferred
+        const preSweep = await sweepRuntime.sweepDeferredL1Credits(walletRecord);
+        assert.equal(preSweep.swept, false);
+        assert.equal(preSweep.deferred, true);
+
+        // Pool L1 refilled -> auto-sweep sends L1 tx, clears pendingReceiveSats, does NOT double-charge 2% fee!
+        poolL1Refilled = true;
+        const feesBeforeSweep = (await sweepRuntime.getPoolStatus()).ledgerTotals.earnedServiceFeeSats;
+        const sweeps = await sweepRuntime.sweepAllDeferredL1Credits((wid) => (wid === walletRecord.walletId ? walletRecord : null));
+        assert.equal(sweeps.length, 1);
+        assert.equal(sweeps[0].swept, true);
+        assert.equal(sweepRuntime.getLedgerState(walletRecord.walletId).pendingReceiveSats, 0);
+        const feesAfterSweep = (await sweepRuntime.getPoolStatus()).ledgerTotals.earnedServiceFeeSats;
+        assert.equal(feesAfterSweep, feesBeforeSweep, "L1 sweep MUST NOT double-charge 2% service fee!");
+        const balAfterSweep = await sweepRuntime.readBalance(walletRecord);
+        assert.ok(balAfterSweep.onchainUnconfirmedTrustedSats > 9_000n, "Swept UTXO immediately spendable on L1 at 0-conf!");
+      } finally {
+        sweepRuntime.close();
+      }
+    }
+
     console.log(
       "l1 0-conf fronter check ok: pure L1 MuSig2+CSV wallet, live CSV sync (blocks:4320), real @arkade-os/swap lockup derivation, unilateral CSV Tapscript recovery, Muun LEND/COLLECT/FulfillFullDebt, hold-broadcast abort & timeout lock safety, broadcast_pending crash reconciler, 5x concurrent claim mutex, maxSats-with-L1-fee, 2% bidirectional fees + float equity monitor, and direct L1 send verified",
     );
