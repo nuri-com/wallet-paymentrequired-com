@@ -5,6 +5,12 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — Stress-test hardening: broadcast-attempt lock guard, `sendOnchainBtc` WAL, ancestor-depth cap & Esplora 429 backoff (2026-11-24)
+
+- Prevent potential double L1 payouts if `sendL1Payout` fails/times out after attempting `broadcastTx` (`err.l1BroadcastAttempted`), persist `broadcast_pending` before `sendOnchainBtc` broadcast, use exact multi-input fee in debt-collateral checks, and guard `Path 3` against concurrent in-flight `LEND` sends + refund overflow (`src/agent-l1-fronter-v2.mjs`).
+- Track `ancestorDepth` end-to-end across `poolLocalChange`, `claimLightningReceive`, `sweepDeferredL1Credits`, and `sendOnchainBtc`, enforce `MAX_TRUSTED_ANCESTOR_DEPTH = 20` sum limits, defer `fronter_l1_pool_mempool_chain_full` cleanly, filter net-negative dust inputs under high fee rates, require `to_amount >= 330` on `createLightningReceive`, prioritize `pending_receive_sats DESC` on sweeps, drop fee cache TTL to `60s`, and add 3x exponential backoff on GET HTTP `429`/`502`/`503`/`504` (`createEsploraL1Client`).
+- Add `TEST 21` & `TEST 22` in `scripts/check-l1-0conf-fronter.mjs` (`22` offline E2E tests total).
+
 ## Unreleased — Reliability hardening #1–#3: deferred L1 auto-sweep, `paying_ln` VHTLC timeout reconciler & Nostr RFQ retry (2026-11-24)
 
 - `#1`: Add `sweepDeferredL1Credits` / `sweepAllDeferredL1Credits` (`src/agent-l1-fronter-v2.mjs`), wired into existing `startLnurlAutoClaim` (`src/mcp-wallet-prf-v2.mjs`) to auto-sweep queued `pending_receive_sats >= l1SettleFloorSats` to the user's `bc1p...` as soon as Pool L1 refills — with zero double-charging of the `2%` service fee.

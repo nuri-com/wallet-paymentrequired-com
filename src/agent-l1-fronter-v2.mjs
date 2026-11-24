@@ -97,7 +97,7 @@ const BIP68_SECONDS_MOD = 1 << BIP68_LOCKTIME_GRANULARITY;
 const BIP68_SECONDS_MAX = BIP68_LOCKTIME_MASK << BIP68_LOCKTIME_GRANULARITY;
 const REGTEST_NETWORK = { bech32: "bcrt", pubKeyHash: 0x6f, scriptHash: 0xc4, wif: 0xef };
 const COSIGNER_HEALTH_TTL_MS = 5 * 60_000;
-const FEE_CACHE_TTL_MS = 10 * 60_000;
+const FEE_CACHE_TTL_MS = 60_000;
 const TRUSTED_GRACE_MS = 30_000;
 const DEFAULT_CSV_SAFETY_BLOCKS = 144;
 const DEFAULT_CSV_SAFETY_SECONDS = 7 * 24 * 3600;
@@ -416,21 +416,39 @@ export function createEsploraL1Client({
   let cachedFeeRateAt = 0;
 
   async function req(path, opts = {}) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const res = await fetchImpl(`${origin}${path}`, { ...opts, signal: controller.signal });
-      if (res.status === 404) return { ok: false, status: 404, res };
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        const err = new Error(`esplora_http_${res.status}:${text.slice(0, 200)}`);
-        err.status = res.status;
-        err.responseText = text;
-        throw err;
+    const isGet = !opts.method || String(opts.method).toUpperCase() === "GET";
+    const maxAttempts = isGet ? 3 : 1;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const res = await fetchImpl(`${origin}${path}`, { ...opts, signal: controller.signal });
+        if (res.status === 404) return { ok: false, status: 404, res };
+        if (!res.ok) {
+          const retryable = isGet && (res.status === 429 || res.status === 502 || res.status === 503 || res.status === 504);
+          if (retryable && attempt < maxAttempts) {
+            const retryAfter = Number(res.headers?.get?.("retry-after") || 0);
+            const delayMs = retryAfter > 0 ? Math.min(3_000, retryAfter * 1000) : 250 * 2 ** (attempt - 1);
+            await new Promise((r) => setTimeout(r, delayMs));
+            continue;
+          }
+          const text = await res.text().catch(() => "");
+          const err = new Error(`esplora_http_${res.status}:${text.slice(0, 200)}`);
+          err.status = res.status;
+          err.responseText = text;
+          throw err;
+        }
+        return { ok: true, status: res.status, res };
+      } catch (err) {
+        const transientNet =
+          isGet &&
+          attempt < maxAttempts &&
+          (err?.name === "AbortError" || /fetch|network|timeout|econn|socket/i.test(String(err?.message || "")));
+        if (!transientNet) throw err;
+        await new Promise((r) => setTimeout(r, 250 * 2 ** (attempt - 1)));
+      } finally {
+        clearTimeout(timer);
       }
-      return { ok: true, status: res.status, res };
-    } finally {
-      clearTimeout(timer);
     }
   }
 
@@ -500,6 +518,7 @@ function isPreBroadcastL1DeferError(err) {
     msg === "fronter_l1_pool_insufficient_liquidity" ||
     msg === "fronter_l1_hot_wallet_not_configured" ||
     msg === "fronter_l1_payout_below_dust_after_fee" ||
+    msg === "fronter_l1_pool_mempool_chain_full" ||
     msg.startsWith("l1_fee_estimation_unavailable")
   );
 }
@@ -875,7 +894,7 @@ export function openL1FronterLedger(dbPath = ":memory:") {
   function listWalletsWithPendingReceive(minSats) {
     return db
       .prepare(
-        "SELECT wallet_id FROM nuri_l1_fronter_ledger WHERE debt_sats = 0 AND pending_receive_sats >= ? ORDER BY updated_at_ms ASC LIMIT 20",
+        "SELECT wallet_id FROM nuri_l1_fronter_ledger WHERE debt_sats = 0 AND pending_receive_sats >= ? ORDER BY pending_receive_sats DESC LIMIT 20",
       )
       .all(Math.max(1, Math.trunc(Number(minSats || 1))))
       .map((r) => String(r.wallet_id));
@@ -1279,7 +1298,7 @@ export function createServerArkadeLiquidityPool({
         from_amount: Number(quote.from_amount),
         to_amount: Number(quote.to_amount),
       };
-      if (normalizedQuote.from_amount !== Number(amountSats) || !(normalizedQuote.to_amount > 0)) {
+      if (normalizedQuote.from_amount !== Number(amountSats) || !(normalizedQuote.to_amount >= P2TR_DUST_SATS)) {
         throw new Error("invalid_lightning_receive_quote_amount");
       }
       const derived = deriveLightningReceive({
@@ -1396,11 +1415,22 @@ export function createServerArkadeLiquidityPool({
       return withPoolLock("l1_hot_wallet", async () => {
         if (!hasL1Key || !l1P2tr) throw new Error("fronter_l1_hot_wallet_not_configured");
         const utxos = await listPoolL1Utxos();
-        const sorted = [...utxos].sort((a, b) => {
-          if (Boolean(a.confirmed) !== Boolean(b.confirmed)) return a.confirmed ? -1 : 1;
-          return b.value - a.value;
-        });
         const feeRate = await esploraClient.estimateFeeRate(3);
+        const minInputValue = feeRate > 1 ? Math.ceil(58 * feeRate) + 1 : 0;
+        const usable = [];
+        let hasChainFull = false;
+        for (const u of utxos) {
+          if (!u.confirmed && Number(u.ancestorDepth || 1) >= MAX_TRUSTED_ANCESTOR_DEPTH) {
+            hasChainFull = true;
+            continue;
+          }
+          if (u.value <= minInputValue) continue;
+          usable.push(u);
+        }
+        const sorted = [...usable].sort((a, b) => {
+          if (Boolean(a.confirmed) !== Boolean(b.confirmed)) return a.confirmed ? -1 : 1;
+          return (b.value - 58 * feeRate) - (a.value - 58 * feeRate);
+        });
         // User pays predictable 1-in-2-out P2TR fee; server absorbs extra consolidation weight if fragmented.
         const userFeeSats = BigInt(estimateP2trVbytes(1, 2) * feeRate);
         const targetNet = BigInt(amountSats) - userFeeSats;
@@ -1412,14 +1442,23 @@ export function createServerArkadeLiquidityPool({
         const selected = [];
         let totalIn = 0n;
         let actualFeeSats = userFeeSats;
+        let unconfAncestorSum = 0;
+        let maxParentDepth = 0;
         for (const u of sorted) {
+          const depth = u.confirmed ? 0 : Number(u.ancestorDepth || 1);
+          if (!u.confirmed && unconfAncestorSum + depth > MAX_TRUSTED_ANCESTOR_DEPTH) {
+            hasChainFull = true;
+            continue;
+          }
           selected.push(u);
           totalIn += BigInt(u.value);
+          unconfAncestorSum += depth;
+          maxParentDepth = Math.max(maxParentDepth, depth);
           actualFeeSats = BigInt(estimateP2trVbytes(selected.length, 2) * feeRate);
           if (totalIn >= targetNet + actualFeeSats) break;
         }
         if (totalIn < targetNet + actualFeeSats) {
-          throw new Error("fronter_l1_pool_insufficient_liquidity");
+          throw new Error(hasChainFull ? "fronter_l1_pool_mempool_chain_full" : "fronter_l1_pool_insufficient_liquidity");
         }
 
         const tx = new Transaction({ version: 2 });
@@ -1451,8 +1490,22 @@ export function createServerArkadeLiquidityPool({
         }
 
         const rawHex = bytesToHex(tx.extract());
-        const txid = (await esploraClient.broadcastTx(rawHex)) || tx.id.toLowerCase();
+        const localTxid = tx.id.toLowerCase();
+        let txid;
+        try {
+          txid = (await esploraClient.broadcastTx(rawHex)) || localTxid;
+        } catch (err) {
+          if (isAlreadyBroadcastError(err)) {
+            txid = localTxid;
+          } else {
+            err.l1BroadcastAttempted = true;
+            err.l1Txid = localTxid;
+            err.l1RawHex = rawHex;
+            throw err;
+          }
+        }
 
+        const nextDepth = maxParentDepth + 1;
         for (const u of selected) {
           poolSpentOutpoints.add(`${u.txid}:${u.vout}`);
           poolLocalChange.delete(`${u.txid}:${u.vout}`);
@@ -1463,6 +1516,7 @@ export function createServerArkadeLiquidityPool({
             vout: changeVout,
             value: Number(change),
             confirmed: false,
+            ancestorDepth: nextDepth,
           });
         }
         return {
@@ -1471,6 +1525,7 @@ export function createServerArkadeLiquidityPool({
           payoutSats: Number(targetNet),
           feeSats: Number(userFeeSats),
           actualMinerFeeSats: Number(actualFeeSats),
+          ancestorDepth: nextDepth,
           rawHex,
         };
       });
@@ -1479,15 +1534,21 @@ export function createServerArkadeLiquidityPool({
 }
 
 function selectL1Utxos(utxos, targetSats, feeRateSatVb) {
-  const ordered = [...utxos].sort((a, b) => {
+  const minInputValue = feeRateSatVb > 1 ? Math.ceil(58 * feeRateSatVb) + 1 : 0;
+  const usable = utxos.filter((u) => Number(u.value) > minInputValue);
+  const ordered = [...usable].sort((a, b) => {
     if (Boolean(a.confirmed) !== Boolean(b.confirmed)) return a.confirmed ? -1 : 1;
-    return b.value - a.value;
+    return (Number(b.value) - 58 * feeRateSatVb) - (Number(a.value) - 58 * feeRateSatVb);
   });
   const selected = [];
   let totalIn = 0n;
+  let unconfAncestorSum = 0;
   for (const u of ordered) {
+    const depth = u.confirmed ? 0 : Number(u.ancestorDepth || 1);
+    if (!u.confirmed && unconfAncestorSum + depth > MAX_TRUSTED_ANCESTOR_DEPTH) continue;
     selected.push(u);
     totalIn += BigInt(u.value);
+    unconfAncestorSum += depth;
     const fee2 = BigInt(estimateP2trVbytes(selected.length, 2) * feeRateSatVb);
     if (totalIn >= BigInt(targetSats) + fee2) {
       const change = totalIn - BigInt(targetSats) - fee2;
@@ -1718,9 +1779,11 @@ export function createAgentL1FronterRuntime({
               const creditSpent = Math.max(0, Number(row.credit_used_sats || 0));
               store.runTx(() => {
                 const cur = store.getLedger(walletRecord.walletId);
+                const refundedDebt = Math.min(cur.debtSats, debtAdded);
+                const collectedOverflow = debtAdded - refundedDebt;
                 store.setLedger(walletRecord.walletId, {
-                  debtSats: Math.max(0, cur.debtSats - debtAdded),
-                  pendingReceiveSats: cur.pendingReceiveSats + creditSpent,
+                  debtSats: cur.debtSats - refundedDebt,
+                  pendingReceiveSats: cur.pendingReceiveSats + creditSpent + collectedOverflow,
                 });
                 store.upsertSwap({
                   opId: row.op_id,
@@ -2354,6 +2417,12 @@ export function createAgentL1FronterRuntime({
       if (!pool.l1DepositScriptHex) {
         throw new Error("fronter_l1_deposit_address_not_configured");
       }
+      const inFlightLends = store
+        .listSwapsByStatus(walletRecord.walletId, ["paying_ln"])
+        .filter((s) => s.mode === "lend");
+      if (inFlightLends.length > 0) {
+        throw new Error("l1_lend_in_flight");
+      }
       const rawL1Target = neededAfterCredit + ledgerState.debtSats;
       const outputPadding = rawL1Target < P2TR_DUST_SATS ? P2TR_DUST_SATS - rawL1Target : 0;
       const l1TargetSats = rawL1Target + outputPadding;
@@ -2591,10 +2660,14 @@ export function createAgentL1FronterRuntime({
           });
         } catch (err) {
           const msg = String(err?.message || err || "");
+          if (err?.l1BroadcastAttempted) {
+            // Broadcast already attempted (e.g. HTTP timeout/503): keep `claiming` lock so retries never double-pay!
+            throw err;
+          }
           if (isPreBroadcastL1DeferError(err)) {
             l1PayoutDeferredReason = msg;
           } else {
-            // L1 payout broadcast uncertain or failed unexpectedly -> delete claiming reservation so next tick retries safely.
+            // L1 payout never broadcast -> delete claiming reservation so next tick retries safely.
             store.db.prepare("DELETE FROM nuri_l1_fronter_swaps WHERE op_id = ? AND status = 'claiming'").run(opId);
             throw err;
           }
@@ -2612,7 +2685,7 @@ export function createAgentL1FronterRuntime({
               amountSats: payout.payoutSats,
               scriptPubKeyHex: l1.scriptPubKeyHex,
               sourceKind: "fronter_payout",
-              ancestorDepth: 1,
+              ancestorDepth: Number(payout.ancestorDepth || 1),
             });
             store.setLedger(walletRecord.walletId, { debtSats: newDebt, pendingReceiveSats: 0 });
             store.upsertSwap({
@@ -2734,10 +2807,11 @@ export function createAgentL1FronterRuntime({
       const ledgerState = store.getLedger(walletRecord.walletId);
       const availSats = spendable.reduce((s, u) => s + u.value, 0);
 
-      // Prevent under-collateralizing outstanding Muun LEND debt on external L1 sends!
+      // Prevent under-collateralizing outstanding Muun LEND debt on external L1 sends (using actual multi-in fee)!
       if (!isSelfRefresh && ledgerState.debtSats > 0) {
         const feeRate = await esplora.estimateFeeRate(3);
-        const estFee = estimateP2trVbytes(1, 2) * feeRate;
+        const pick = selectL1Utxos(spendable, amount, feeRate);
+        const estFee = pick ? Number(pick.feeSats) : estimateP2trVbytes(1, 2) * feeRate;
         if (availSats - amount - estFee < ledgerState.debtSats + 500) {
           throw new Error(`l1_send_would_undercollateralize_debt:${ledgerState.debtSats}`);
         }
@@ -2753,6 +2827,25 @@ export function createAgentL1FronterRuntime({
         opId,
         maxTotalSpendSats: maxSats,
         extraPriorCostSats: amount,
+      });
+
+      // Persist `broadcast_pending` before broadcast so transient Esplora 429/503 retries cleanly on readBalance!
+      store.upsertSwap({
+        opId,
+        walletId: walletRecord.walletId,
+        direction: "out",
+        mode: "l1_direct",
+        status: "broadcast_pending",
+        amountSats: amount,
+        feeSats: signed.feeSats,
+        serviceFeeSats: 0,
+        debtDeltaSats: 0,
+        l1Txid: signed.txid,
+        l1RawHex: signed.rawHex,
+        spentOutpoints: signed.spentOutpoints,
+        changeOutpoints: signed.changeOutpoints,
+        creditUsedSats: 0,
+        outputPaddingSats: 0,
       });
 
       let txid;
@@ -2771,6 +2864,17 @@ export function createAgentL1FronterRuntime({
                 spending_txid: signed.txid,
               })
               .catch(() => {});
+            store.upsertSwap({
+              opId,
+              walletId: walletRecord.walletId,
+              direction: "out",
+              mode: "l1_direct",
+              status: "failed",
+              amountSats: amount,
+              feeSats: 0,
+              l1Txid: signed.txid,
+              error: err?.message || String(err),
+            });
           }
           throw err;
         }
@@ -2786,22 +2890,40 @@ export function createAgentL1FronterRuntime({
         })
         .catch(() => null);
 
-      store.markOutpointsSpentLocally(walletRecord.walletId, signed.spentOutpoints, txid);
+      const depthByOutpoint = new Map(
+        signed.changeOutpoints.map((c) => [String(c.outpoint).toLowerCase(), Number(c.ancestor_depth || 1)]),
+      );
       const trustedChange = Array.isArray(mb?.trusted_change_outpoints)
         ? mb.trusted_change_outpoints
         : signed.changeOutpoints;
-      for (const ch of trustedChange) {
-        const [cTxid, cVoutStr] = String(ch.outpoint).split(":");
-        store.addTrustedUtxo({
+      store.runTx(() => {
+        store.markOutpointsSpentLocally(walletRecord.walletId, signed.spentOutpoints, txid);
+        for (const ch of trustedChange) {
+          const [cTxid, cVoutStr] = String(ch.outpoint).split(":");
+          store.addTrustedUtxo({
+            walletId: walletRecord.walletId,
+            txid: cTxid,
+            vout: Number(cVoutStr),
+            amountSats: Number(ch.amount_sats),
+            scriptPubKeyHex: l1.scriptPubKeyHex,
+            sourceKind: "cosigned_change",
+            ancestorDepth: Number(ch.ancestor_depth ?? depthByOutpoint.get(String(ch.outpoint).toLowerCase()) ?? 1),
+          });
+        }
+        store.upsertSwap({
+          opId,
           walletId: walletRecord.walletId,
-          txid: cTxid,
-          vout: Number(cVoutStr),
-          amountSats: Number(ch.amount_sats),
-          scriptPubKeyHex: l1.scriptPubKeyHex,
-          sourceKind: "cosigned_change",
-          ancestorDepth: Number(ch.ancestor_depth || 1),
+          direction: "out",
+          mode: "l1_direct",
+          status: "done",
+          amountSats: amount,
+          feeSats: signed.feeSats,
+          serviceFeeSats: 0,
+          debtDeltaSats: 0,
+          l1Txid: txid,
+          l1RawHex: signed.rawHex,
         });
-      }
+      });
       return {
         txid,
         amountSats: amount,
@@ -2920,7 +3042,7 @@ export function createAgentL1FronterRuntime({
           amountSats: payout.payoutSats,
           scriptPubKeyHex: l1.scriptPubKeyHex,
           sourceKind: "fronter_payout",
-          ancestorDepth: 1,
+          ancestorDepth: Number(payout.ancestorDepth || 1),
         });
         store.setLedger(walletRecord.walletId, { debtSats: 0, pendingReceiveSats: 0 });
         store.upsertSwap({

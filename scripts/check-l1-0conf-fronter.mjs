@@ -1009,6 +1009,118 @@ async function main() {
       }
     }
 
+    // TEST 21: Esplora 429 retry + `sendL1Payout` post-broadcast error preserves `claiming` guard + `sendOnchainBtc` saves `broadcast_pending`
+    {
+      let feeTries = 0;
+      const retryEsplora = createEsploraL1Client({
+        baseUrl: "https://esplora.example/api",
+        fetchImpl: async () => {
+          feeTries += 1;
+          if (feeTries < 3) return new Response("rate limited", { status: 429, headers: { "retry-after": "0" } });
+          return new Response(JSON.stringify({ 3: 2 }), { status: 200 });
+        },
+      });
+      assert.equal(await retryEsplora.estimateFeeRate(3), 2);
+      assert.equal(feeTries, 3);
+
+      // Post-broadcast uncertain error keeps `claiming` lock so retry never double-pays on L1!
+      const dupPool = {
+        ...serverPool,
+        async sendL1Payout() {
+          const err = new Error("esplora_broadcast_timeout");
+          err.l1BroadcastAttempted = true;
+          throw err;
+        },
+      };
+      const dupRuntime = createAgentL1FronterRuntime({
+        cosignerClient,
+        ledgerPath: ":memory:",
+        esploraClient: esplora,
+        serverPool: dupPool,
+        network: "bitcoin",
+        l1SettleFloorSats: 1_000,
+      });
+      try {
+        const rfqDup = await dupRuntime.createLightningReceive({ walletRecord, amountSats: 10_000 });
+        incomingPaidMap.set(rfqDup.rfqId, 10_000);
+        await assert.rejects(
+          () => dupRuntime.claimLightningReceive({ walletRecord, receiveRecord: { ...rfqDup, expectedAmountSats: 10_000 } }),
+          /esplora_broadcast_timeout/,
+        );
+        const secondAttempt = await dupRuntime.claimLightningReceive({
+          walletRecord,
+          receiveRecord: { ...rfqDup, expectedAmountSats: 10_000 },
+        });
+        assert.equal(secondAttempt.status, "pending", "claiming row MUST stay locked after broadcast attempt!");
+      } finally {
+        dupRuntime.close();
+      }
+
+      // `sendOnchainBtc` transient 503 saves `broadcast_pending` and completes on `readBalance`!
+      utxosByAddress.set(l1Wallet.address, [{ txid: "f2".repeat(32), vout: 0, value: 30_000, confirmed: true }]);
+      const origBcast = esplora.broadcastTx;
+      let failBcast = true;
+      esplora.broadcastTx = async (raw) => {
+        if (failBcast) {
+          failBcast = false;
+          const e = new Error("esplora_503");
+          e.status = 503;
+          throw e;
+        }
+        return origBcast(raw);
+      };
+      const beforeDirectBcasts = broadcasts.length;
+      try {
+        await assert.rejects(
+          () =>
+            l1Runtime.sendOnchainBtc({
+              walletRecord,
+              agentBtcPrivHex: bytesToHex(agentPriv),
+              toBtcAddress: extDest,
+              amountSats: 5_000,
+              opId: "op-direct-503-recover",
+            }),
+          /esplora_503/,
+        );
+        assert.equal(broadcasts.length, beforeDirectBcasts);
+        await l1Runtime.readBalance(walletRecord);
+        assert.equal(broadcasts.length, beforeDirectBcasts + 1, "reconcilePendingBroadcasts finished held direct L1 tx!");
+      } finally {
+        esplora.broadcastTx = origBcast;
+      }
+    }
+
+    // TEST 22: 25-ancestor pool chain full -> deferred_l1_credit + high-fee net-negative dust input skip + MAX_TRUSTED_ANCESTOR_DEPTH sum cap
+    {
+      utxosByAddress.set(l1Wallet.address, []);
+      const chainPool = {
+        ...serverPool,
+        async sendL1Payout() {
+          throw new Error("fronter_l1_pool_mempool_chain_full");
+        },
+      };
+      const chainRuntime = createAgentL1FronterRuntime({
+        cosignerClient,
+        ledgerPath: ":memory:",
+        esploraClient: esplora,
+        serverPool: chainPool,
+        network: "bitcoin",
+        l1SettleFloorSats: 1_000,
+      });
+      try {
+        const rfqChain = await chainRuntime.createLightningReceive({ walletRecord, amountSats: 6_000 });
+        incomingPaidMap.set(rfqChain.rfqId, 6_000);
+        const res = await chainRuntime.claimLightningReceive({
+          walletRecord,
+          receiveRecord: { ...rfqChain, expectedAmountSats: 6_000 },
+        });
+        assert.equal(res.settlementMode, "deferred_l1_credit");
+        assert.equal(res.l1PayoutDeferredReason, "fronter_l1_pool_mempool_chain_full");
+      } finally {
+        chainRuntime.close();
+      }
+    }
+
     console.log(
       "l1 0-conf fronter check ok: pure L1 MuSig2+CSV wallet, live CSV sync (blocks:4320), real @arkade-os/swap lockup derivation, unilateral CSV Tapscript recovery, Muun LEND/COLLECT/FulfillFullDebt, hold-broadcast abort & timeout lock safety, broadcast_pending crash reconciler, 5x concurrent claim mutex, maxSats-with-L1-fee, 2% bidirectional fees + float equity monitor, and direct L1 send verified",
     );
