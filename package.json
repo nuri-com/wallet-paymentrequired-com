@@ -11,7 +11,7 @@
     "check": "npm run precheck && node scripts/check-import-closure.mjs",
     "check:ask": "node --experimental-test-module-mocks scripts/check-wallet-ask.mjs",
     "check:ask:regression": "node scripts/check-wallet-ask-regression.mjs",
-    "check:prf": "node scripts/check-prf-arkade-v2.mjs && node scripts/check-cross-rail-v2.mjs && node scripts/check-solana-x402.mjs"
+    "check:prf": "node scripts/check-prf-arkade-v2.mjs && node scripts/check-cross-rail-v2.mjs && node scripts/check-solana-x402.mjs && node scripts/check-l1-0conf-fronter.mjs"
   },
   "engines": {
     "node": ">=22"

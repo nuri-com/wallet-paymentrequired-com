@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { encodeFunctionData, getAddress, parseAbi } from "viem";
 import { isValidArkAddress } from "@arkade-os/sdk";
 import { createAgentArkadeRuntime } from "./agent-arkade-v2.mjs";
+import { createAgentL1FronterRuntime } from "./agent-l1-fronter-v2.mjs";
 import { createAgentCosignerClient } from "./agent-cosigner-client.mjs";
 import {
   createConnectGrantClient,
@@ -193,11 +194,21 @@ export function createPrfWalletCoordinator({
 
   function ensureArkade() {
     if (!arkade) {
-      arkade = createAgentArkadeRuntime({
-        env,
-        cosignerClient: ensureCosigner(),
-        fetchImpl,
-      });
+      const custodyMode = String(env.AGENT_BTC_CUSTODY_MODE || "arkade").trim().toLowerCase();
+      if (custodyMode === "l1_0conf") {
+        arkade = createAgentL1FronterRuntime({
+          env,
+          cosignerClient: ensureCosigner(),
+          ledgerPath: path ? `${path}.l1-fronter` : ":memory:",
+          fetchImpl,
+        });
+      } else {
+        arkade = createAgentArkadeRuntime({
+          env,
+          cosignerClient: ensureCosigner(),
+          fetchImpl,
+        });
+      }
     }
     return arkade;
   }
@@ -879,7 +890,8 @@ export function createPrfWalletCoordinator({
             sats: 0n,
           };
 
-    if (arkadeState.address && arkadeState.address !== walletRecord.arkadeAddress) {
+    const isL1Mode = arkadeState.custodyMode === "l1_0conf";
+    if (!isL1Mode && arkadeState.address && arkadeState.address !== walletRecord.arkadeAddress) {
       ensureStore().updateWalletArkadeAddress(walletRecord.walletId, arkadeState.address);
       walletRecord.arkadeAddress = arkadeState.address;
     }
@@ -891,7 +903,18 @@ export function createPrfWalletCoordinator({
       owner_address: walletRecord.mainEoa,
       sats: Number(arkadeState.sats),
       btc: formatSatsAsBtc(arkadeState.sats),
-      ...(arkadeState.address ? { arkade_address: arkadeState.address } : {}),
+      ...(isL1Mode
+        ? {
+            btc_custody_mode: "l1_0conf",
+            btc_address: arkadeState.btcAddress || arkadeState.address,
+            ...(arkadeState.debtSats ? { btc_debt_sats: arkadeState.debtSats } : {}),
+            ...(arkadeState.pendingReceiveSats
+              ? { btc_pending_l1_sweep_sats: arkadeState.pendingReceiveSats }
+              : {}),
+          }
+        : arkadeState.address
+          ? { arkade_address: arkadeState.address }
+          : {}),
       ...(solanaSigner ? { solana_address: solanaSigner.address,
         solana_usdc: unitsToDecimal(String(solanaResult.status === "fulfilled" ? solanaResult.value : 0n), 6) } : {}),
     };
@@ -900,7 +923,11 @@ export function createPrfWalletCoordinator({
   function dualBalanceSummary(balances) {
     const usdc = balances.available ?? "0";
     const sats = balances.sats ?? 0;
-    const btcAddr = balances.arkade_address ? ` Arkade ${balances.arkade_address}` : "";
+    const btcAddr = balances.btc_address
+      ? ` Bitcoin L1 ${balances.btc_address}`
+      : balances.arkade_address
+        ? ` Arkade ${balances.arkade_address}`
+        : "";
     const solana = balances.solana_address ? ` AND Solana USDC ${balances.solana_usdc || "0"} (${balances.solana_address})` : "";
     return `Show ALL rails to the user: Base USDC ${usdc} (${balances.address}) AND Bitcoin ${sats} sats / ${balances.btc || "0"} BTC (${btcAddr ? `${btcAddr.trim()}; ` : ""}Lightning invoice via receive rail="lightning")${solana}.`;
   }
@@ -1279,6 +1306,18 @@ export function createPrfWalletCoordinator({
 
     if (requestedRail === "arkade" || requestedRail === "btc") {
       const ark = await ensureArkade().readBalance(wallet);
+      if (ark.custodyMode === "l1_0conf") {
+        return {
+          ok: true,
+          status: "done",
+          rail: "btc",
+          btc_custody_mode: "l1_0conf",
+          btc_address: ark.btcAddress || ark.address,
+          sats: Number(ark.sats),
+          btc: formatSatsAsBtc(ark.sats),
+          next: `Send on-chain Bitcoin (L1) to ${ark.btcAddress || ark.address}, then call wallet balance.`,
+        };
+      }
       if (ark.address && ark.address !== wallet.arkadeAddress) {
         db.updateWalletArkadeAddress(wallet.walletId, ark.address);
       }
@@ -1568,6 +1607,35 @@ export function createPrfWalletCoordinator({
     ]);
     const arkSats = arkRes.status === "fulfilled" ? arkRes.value.sats : 0n;
     const usdcBal = usdcRes.status === "fulfilled" ? usdcRes.value : 0n;
+    const btcRuntime = ensureArkade();
+
+    // Direct native L1 MuSig2 spend when running in pure-L1 0-conf mode (no SwapKit hop!).
+    if (typeof btcRuntime.sendOnchainBtc === "function" && arkSats >= BigInt(amountSats) + 350n) {
+      const sent = await btcRuntime.sendOnchainBtc({
+        walletRecord: wallet,
+        agentBtcPrivHex: secrets.agentBtcPrivHex,
+        toBtcAddress: btcAddress,
+        amountSats,
+        opId: `${opId}:l1-direct`,
+      });
+      return {
+        ok: true,
+        status: "done",
+        request_id: reqId,
+        rail: "btc",
+        funded_from: "l1_musig2",
+        to: btcAddress,
+        amount_sats: amountSats,
+        fee_sats: sent.feeSats,
+        receipt: {
+          tx: sent.txid,
+          amount: `${amountSats} sats`,
+          to: btcAddress,
+        },
+        next: "On-chain Bitcoin sent directly from L1 2-of-2 MuSig2 wallet.",
+      };
+    }
+
     const sk = ensureSwapkit();
 
     // Prefer Arkade sats when sufficient (~5% buffer for L1 miner + swap fee), else Base USDC.
@@ -2399,6 +2467,7 @@ export function createPrfWalletCoordinator({
     for (const rfqId of [...activeReceiveWatchers.keys()]) {
       stopReceiveWatcher(rfqId);
     }
+    arkade?.close?.();
     store?.close?.();
     store = null;
   }

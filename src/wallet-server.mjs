@@ -193,7 +193,8 @@ const server = http.createServer(async (req, res) => {
     if (await serviceRpc(req, res, url)) return;
     if (url.pathname === "/healthz") {
       return writeJson(req, res, 200, { ok: true, version: VERSION, git_sha: GIT_SHA, built_at: process.env.BUILT_AT || null, built_by: process.env.BUILT_BY || null, release_phase: "prototyping",
-        tools: mcpTools.map((tool) => tool.name), service_mode: SERVICE.mode, public_base: browserBridge.publicBase, aa_rpc: aaConfig.bundlerUrl });
+        tools: mcpTools.map((tool) => tool.name), service_mode: SERVICE.mode, public_base: browserBridge.publicBase, aa_rpc: aaConfig.bundlerUrl,
+        btc_custody_mode: String(process.env.AGENT_BTC_CUSTODY_MODE || "arkade").trim().toLowerCase(), l1_0conf_fronter_supported: true });
     }
     if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/") {
       const origin = resolveWalletOrigin(req);

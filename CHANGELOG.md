@@ -5,6 +5,25 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — Muun-model Pure-L1 2-of-2 MuSig2+CSV + Server-Only Arkade 0-Conf Fronter (2026-11-24)
+
+- Add `src/agent-l1-fronter-v2.mjs` (`createAgentL1FronterRuntime`, `deriveAgentL1Wallet`,
+  `createServerArkadeLiquidityPool`, `openL1FronterLedger`) implementing pure on-chain L1
+  `tr(MuSig2(agent, cosigner), pk(agent) + CSV)` user wallets backed by a **single** server-side
+  Arkade + L1 liquidity pool (zero per-user Arkade VTXOs, zero client VTXO renewal/exit chains).
+- Outgoing L1 → Lightning: Muun-style `LEND` (tiny sends `<= FRONTER_LEND_MAX_SATS` settle
+  instantly via server Arkade with 0 L1 tx, zero user custody risk), `COLLECT` + cosigner-locked
+  hold-broadcast for larger sends (broadcasts signed L1 replenishment tx only after LN preimage;
+  releases outpoint lock with 0 L1 fee if LN fails), plus trusted 0-conf self-change chaining.
+- Incoming Lightning → User L1 `bc1p...`: Muun-style `FulfillFullDebt` debt cancellation first
+  (0 L1 tx), instant 0-conf L1 P2TR payout above `FRONTER_L1_SETTLE_FLOOR_SATS` (registered
+  trusted 0-conf on `nuri-agent-cosigner` for immediate re-spend), and micro-receive auto-sweep
+  below floor.
+- Direct 1-tx native L1 MuSig2 send for `bc1...`/BIP21 addresses (`payOnchainBtc`), cosigner
+  `/v1/l1/*` RPC methods (`src/agent-cosigner-client.mjs`), `AGENT_BTC_CUSTODY_MODE=l1_0conf`
+  runtime switch (`src/mcp-wallet-prf-v2.mjs`, `/healthz` capability flag in `src/wallet-server.mjs`),
+  and offline E2E suite `scripts/check-l1-0conf-fronter.mjs` wired into `npm run check:prf`.
+
 ## Unreleased — Seamless Base USDC / Arkade -> Tempo MPP auto-bridge via Relay (2026-11-23)
 
 - Auto-fund Tempo mainnet (`4217`) MPP calls from **Base USDC** (or **Arkade/Lightning** via

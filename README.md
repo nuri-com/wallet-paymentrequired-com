@@ -10,8 +10,10 @@ Lightning Address `LNURL-pay`, and native `ark1` VTXOs via Arkade Intents — ze
 New wallets onboard with a single vendor-independent **Nuri Passkey PRF** tap on `connect.nuri.com`
 (`operation: "agent_grant"`, bearer token `npw1_<43-char-base64url>`), deriving domain-separated
 Agent EVM + Bitcoin child keys (`nuri-agent-wallet-v1`) co-signed by `nuri-agent-cosigner`
-(`127.0.0.1:8794`) over a **2-of-4 Base Safe v1.4.1** and a **2-of-2 MuSig2 + 14-day server-decay
-Arkade VTXO script**. All existing v1 Privy/ZeroDev wallets (`44`-char and `66`-char `wallet_key`)
+(`127.0.0.1:8794`) over a **2-of-4 Base Safe v1.4.1** and either a **2-of-2 MuSig2 + server-decay
+Arkade VTXO script** (default) or **Pure-L1 2-of-2 MuSig2+CSV + Server-Only Arkade 0-Conf Fronter**
+(`AGENT_BTC_CUSTODY_MODE=l1_0conf`, `src/agent-l1-fronter-v2.mjs` — Muun-style `LEND`/`COLLECT`/`FulfillFullDebt`,
+hold-broadcast anti-RBF, instant 0-conf L1↔LN settlement, and direct native L1 `bc1...` sends). All existing v1 Privy/ZeroDev wallets (`44`-char and `66`-char `wallet_key`)
 remain 100% live in place; see [`docs/CUSTODY-EVOLUTION.md`](docs/CUSTODY-EVOLUTION.md) and
 [`docs/AGENT-DERIVATION-SPEC.md`](docs/AGENT-DERIVATION-SPEC.md).
 

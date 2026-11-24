@@ -80,5 +80,10 @@ export function createAgentCosignerClient({
     initArkadeTreeSession: (body, opts) => post("/v1/arkade/tree/session", body, opts),
     arkadeTreeNonce: (body, opts) => post("/v1/arkade/tree/nonce", body, opts),
     arkadeTreeSign: (body, opts) => post("/v1/arkade/tree/sign", body, opts),
+    signL1Psbt: (body, opts) => post("/v1/l1/sign-psbt", body, opts),
+    markL1Broadcast: (body, opts) => post("/v1/l1/outpoints/mark-broadcast", body, opts),
+    releaseL1Outpoints: (body, opts) => post("/v1/l1/outpoints/release", body, opts),
+    l1OutpointsStatus: (body, opts) => post("/v1/l1/outpoints/status", body, opts),
+    registerTrustedL1Outpoint: (body, opts) => post("/v1/l1/outpoints/register-trusted", body, opts),
   };
 }
