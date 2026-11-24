@@ -2580,6 +2580,12 @@ export function createAgentL1FronterRuntime({
     });
   }
 
+  function computeReceiveServiceFee(grossSats) {
+    const n = Number(grossSats);
+    if (!(receiveFeeBps > 0) || !(n > 0)) return 0;
+    return Math.min(Math.max(0, n - 1), Math.ceil((n * receiveFeeBps) / 10_000));
+  }
+
   /**
    * Incoming Lightning invoice backed by the single server Arkade pool.
    */
@@ -2590,8 +2596,12 @@ export function createAgentL1FronterRuntime({
     }
     const l1 = await deriveWalletScript(walletRecord);
     const created = await pool.createLightningReceive({ amountSats: sats, rfqId });
+    const receiveServiceFeeSats = computeReceiveServiceFee(created.expectedAmountSats);
     return {
       ...created,
+      grossExpectedAmountSats: created.expectedAmountSats,
+      feeSats: Number(created.feeSats || 0) + receiveServiceFeeSats,
+      expectedAmountSats: Math.max(0, Number(created.expectedAmountSats || 0) - receiveServiceFeeSats),
       payoutAddress: l1.address,
       payoutPkScriptHex: l1.scriptPubKeyHex,
     };
@@ -2623,7 +2633,7 @@ export function createAgentL1FronterRuntime({
       if (claimed.status !== "claimed") {
         return { status: claimed.status || "pending" };
       }
-      const netReceivedSats = Number(claimed.claimedSats || receiveRecord.expectedAmountSats || 0);
+      const netReceivedSats = Number(claimed.claimedSats || receiveRecord.grossExpectedAmountSats || receiveRecord.expectedAmountSats || 0);
       if (netReceivedSats <= 0) {
         return { status: "pending" };
       }
@@ -2654,10 +2664,7 @@ export function createAgentL1FronterRuntime({
 
       const l1 = await deriveWalletScript(walletRecord);
       const ledgerState = store.getLedger(walletRecord.walletId);
-      const receiveServiceFeeSats =
-        receiveFeeBps > 0
-          ? Math.min(Math.max(0, netReceivedSats - 1), Math.ceil((netReceivedSats * receiveFeeBps) / 10_000))
-          : 0;
+      const receiveServiceFeeSats = computeReceiveServiceFee(netReceivedSats);
       const creditedSats = netReceivedSats - receiveServiceFeeSats;
 
       // Step 1: Muun `FulfillFullDebt` — cancel user's LEND debt first with ZERO L1 tx!

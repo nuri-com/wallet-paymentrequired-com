@@ -1,6 +1,6 @@
 {
   "about": "Paid web services an agent can use straight away with wallet action=pay (x402, USDC on Base mainnet). No account, no API key: the agent wallet pays per call. Checked by this service on the date shown. Prices are the seller's and can change; set max_amount to cap what one payment may cost.",
-  "how": "wallet {action:'pay', url, method, body, max_amount, wallet_key, request_id} pays it from the agent wallet and returns { status:'done', receipt:{ tx, amount, to }, resource }. wallet {action:'discover', query} lists more paid services with their price.",
+  "how": "wallet {action:'pay', url, method, body, max_amount, wallet_key, request_id} pays it from the agent wallet and returns { status:'done', receipt:{ tx, amount, to }, resource }.",
   "services": [
     {
       "id": "browser-use-session",

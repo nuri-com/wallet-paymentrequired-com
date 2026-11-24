@@ -32,6 +32,7 @@ import {
   resolveWalletOrigin,
   serviceIndexHtml,
   walletLlmsTxt,
+  walletOpenApiJson,
   walletSkillMd,
 } from "../src/service-index.mjs";
 import {
@@ -181,6 +182,33 @@ function encryptGrant({ prfBytes, sessionId, replyPubkey, index = 0, policy }) {
   assert.ok(walletSkillMd("https://agent.nuri.com").includes("mcp_endpoint: https://agent.nuri.com/mcp"));
   assert.ok(walletLlmsTxt("https://nuriwallet.com").split("\n").length <= 40);
   assert.ok(walletSkillMd("https://nuriwallet.com").includes("mcp_endpoint: https://nuriwallet.com/mcp"));
+
+  // Mode-aware l1_0conf checks across /, /llms.txt, /skill.md, /openapi.json on wallet.nuri.com
+  const l1Llms = walletLlmsTxt("https://wallet.nuri.com", { btcCustodyMode: "l1_0conf" });
+  assert.ok(l1Llms.split("\n").length <= 40);
+  assert.ok(!l1Llms.includes("ark1..."));
+  assert.ok(!/boltz/i.test(l1Llms));
+  assert.ok(l1Llms.includes('"btc"'));
+  const l1Skill = walletSkillMd("https://wallet.nuri.com", { btcCustodyMode: "l1_0conf" });
+  assert.ok(l1Skill.includes("Bitcoin L1 (2-of-2 MuSig2+CSV)"));
+  const l1Api = walletOpenApiJson("https://wallet.nuri.com", { btcCustodyMode: "l1_0conf" });
+  assert.deepEqual(l1Api.paths["/v1/receive"].post.requestBody.content["application/json"].schema.properties.rail.enum, ["lightning", "btc", "usdc", "solana"]);
+  assert.equal(l1Api.paths["/v1/pay"].post.requestBody.content["application/json"].schema.properties.headers, undefined);
+  assert.equal(l1Api.components.schemas.WalletRequest.properties.headers, undefined);
+  assert.ok(!JSON.stringify(l1Api).includes("ark1..."));
+  const l1Home = serviceIndexHtml("wallet", { origin: "https://wallet.nuri.com", btcCustodyMode: "l1_0conf" });
+  const l1Script = l1Home.match(/<script>([\s\S]*?)<\/script>/);
+  assert.ok(l1Script);
+  new Function(l1Script[1]);
+  assert.ok(l1Home.includes("2-of-4 Safe + 2-of-2 Bitcoin L1"));
+  assert.ok(l1Home.includes('min="340"'));
+  assert.ok(l1Home.includes("connected.btc_address"));
+  assert.ok(l1Home.includes("into your Bitcoin L1 wallet"));
+  const l1Inst = instructions(["wallet"], { btcCustodyMode: "l1_0conf" });
+  assert.ok(l1Inst.includes("btc_address"));
+  assert.ok(!l1Inst.includes("ark1..."));
+  const l1StaticTokens = Math.ceil((l1Inst.length + JSON.stringify(wireWalletTool).length) / 4);
+  assert.ok(l1StaticTokens / 64000 <= 0.0245, `l1_0conf static MCP footprint ${((l1StaticTokens / 64000) * 100).toFixed(3)}% exceeds 2.45%`);
 }
 
 // 2. Full cross-rail + on-chain + single approval_url + smart dual-rail 402 E2E

@@ -116,7 +116,7 @@ const walletTool = { ...walletLocal, call: (args, ctx) => walletCallContext.run(
 process.once("exit", () => { walletTool?.close?.(); bankTool?.close?.(); });
 
 // Unattended LNURL claim sweep: pending username@nuriwallet.com receives are
-// claimed into their wallet's Arkade VTXOs without any Passkey session.
+// settled directly to their Pure-L1 bc1p... wallet in l1_0conf mode (or Arkade VTXOs in arkade mode).
 walletLocal.startLnurlAutoClaim?.();
 
 // Tool prices: the one tool_charges journal lives here, paid by the agent Safe (source server.mjs:221).
@@ -165,13 +165,15 @@ rpcTools.set("bridge", { tool: { name: "bridge" }, call: async ({ session_id, su
 const serviceRpc = createServiceRpcServer({ secret: SERVICE.rpcSecret, readJson, writeJson, tools: rpcTools,
   ensure: (session, ctx) => identityHandoff.ensure(session, ctx) });
 
+const BTC_CUSTODY_MODE = String(process.env.AGENT_BTC_CUSTODY_MODE || "arkade").trim().toLowerCase();
+const DOC_OPTS = { btcCustodyMode: BTC_CUSTODY_MODE };
 const mcpTools = mcpConnection.tools();
 const WIRE_TOOLS = mcpTools.map(({ outputSchema, ...tool }) => tool);
-const INITIALIZE_INSTRUCTIONS = instructions(mcpTools.map((tool) => tool.name));
-const HOME_BY_ORIGIN = new Map(WALLET_HOSTS.map((h) => [`https://${h}`, serviceIndexHtml("wallet", { origin: `https://${h}` })]));
-const LLMS_BY_ORIGIN = new Map(WALLET_HOSTS.map((h) => [`https://${h}`, walletLlmsTxt(`https://${h}`)]));
-const SKILL_BY_ORIGIN = new Map(WALLET_HOSTS.map((h) => [`https://${h}`, walletSkillMd(`https://${h}`)]));
-const OPENAPI_BY_ORIGIN = new Map(WALLET_HOSTS.map((h) => [`https://${h}`, JSON.stringify(walletOpenApiJson(`https://${h}`), null, 2)]));
+const INITIALIZE_INSTRUCTIONS = instructions(mcpTools.map((tool) => tool.name), DOC_OPTS);
+const HOME_BY_ORIGIN = new Map(WALLET_HOSTS.map((h) => [`https://${h}`, serviceIndexHtml("wallet", { origin: `https://${h}`, ...DOC_OPTS })]));
+const LLMS_BY_ORIGIN = new Map(WALLET_HOSTS.map((h) => [`https://${h}`, walletLlmsTxt(`https://${h}`, DOC_OPTS)]));
+const SKILL_BY_ORIGIN = new Map(WALLET_HOSTS.map((h) => [`https://${h}`, walletSkillMd(`https://${h}`, DOC_OPTS)]));
+const OPENAPI_BY_ORIGIN = new Map(WALLET_HOSTS.map((h) => [`https://${h}`, JSON.stringify(walletOpenApiJson(`https://${h}`, DOC_OPTS), null, 2)]));
 const REST_ACTION_ROUTES = new Map([
   ["/v1/wallet", null],
   ["/v1/balance", "balance"],
@@ -222,22 +224,22 @@ const server = http.createServer(async (req, res) => {
     }
     if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/") {
       const origin = resolveWalletOrigin(req);
-      return writeHtml(req, res, 200, HOME_BY_ORIGIN.get(origin) || serviceIndexHtml("wallet", { origin }), {
+      return writeHtml(req, res, 200, HOME_BY_ORIGIN.get(origin) || serviceIndexHtml("wallet", { origin, ...DOC_OPTS }), {
         "Cross-Origin-Opener-Policy": "same-origin-allow-popups",
         Vary: "Host, X-Forwarded-Host",
       });
     }
     if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/llms.txt") {
       const origin = resolveWalletOrigin(req);
-      return writeText(req, res, 200, LLMS_BY_ORIGIN.get(origin) || walletLlmsTxt(origin), "text/plain; charset=utf-8");
+      return writeText(req, res, 200, LLMS_BY_ORIGIN.get(origin) || walletLlmsTxt(origin, DOC_OPTS), "text/plain; charset=utf-8");
     }
     if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/skill.md") {
       const origin = resolveWalletOrigin(req);
-      return writeText(req, res, 200, SKILL_BY_ORIGIN.get(origin) || walletSkillMd(origin), "text/markdown; charset=utf-8");
+      return writeText(req, res, 200, SKILL_BY_ORIGIN.get(origin) || walletSkillMd(origin, DOC_OPTS), "text/markdown; charset=utf-8");
     }
     if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/openapi.json") {
       const origin = resolveWalletOrigin(req);
-      return writeText(req, res, 200, OPENAPI_BY_ORIGIN.get(origin) || JSON.stringify(walletOpenApiJson(origin), null, 2), "application/json; charset=utf-8");
+      return writeText(req, res, 200, OPENAPI_BY_ORIGIN.get(origin) || JSON.stringify(walletOpenApiJson(origin, DOC_OPTS), null, 2), "application/json; charset=utf-8");
     }
     if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/favicon.svg") {
       return writeAsset(req, res, 200, FAVICON_SVG, "image/svg+xml");
@@ -259,7 +261,7 @@ const server = http.createServer(async (req, res) => {
       return writeText(req, res, 200, `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`, "application/xml; charset=utf-8");
     }
     // LNURL-pay for username@nuriwallet.com: public, no auth (source of truth is
-    // the PRF handle registry; payments settle as Arkade VTXOs via the RFQ solver).
+    // the PRF handle registry; payments settle to L1 bc1p... in l1_0conf or Arkade VTXOs).
     {
       const lnurlMatch = /^\/(?:\.well-known\/lnurlp|lnurl\/callback)\/([A-Za-z0-9._-]{1,64})$/.exec(url.pathname);
       if (req.method === "GET" && lnurlMatch) {
@@ -373,7 +375,7 @@ async function handleRestWallet(req, res, fixedAction) {
       req,
       res,
       200,
-      `# Plain HTTP REST Wallet Endpoint (${reqOrigin}${req.url || "/v1/wallet"})\n\nSend POST JSON here (no OAuth, no MCP required). Full instructions:\n\n${LLMS_BY_ORIGIN.get(reqOrigin) || walletLlmsTxt(reqOrigin)}`,
+      `# Plain HTTP REST Wallet Endpoint (${reqOrigin}${req.url || "/v1/wallet"})\n\nSend POST JSON here (no OAuth, no MCP required). Full instructions:\n\n${LLMS_BY_ORIGIN.get(reqOrigin) || walletLlmsTxt(reqOrigin, DOC_OPTS)}`,
       "text/plain; charset=utf-8",
     );
   }
@@ -426,7 +428,7 @@ async function handleMcp(req, res) {
       req,
       res,
       200,
-      `# Live Remote MCP Server — ${reqOrigin}/mcp\n\nThis URL is a real, live, authless Streamable HTTP MCP endpoint (POST JSON-RPC, Auth: None, no OAuth).\nTo connect in Claude or ChatGPT: Settings -> Connectors / Apps -> Add Custom Connector -> URL: ${reqOrigin}/mcp (Auth: None).\n\n${LLMS_BY_ORIGIN.get(reqOrigin) || walletLlmsTxt(reqOrigin)}`,
+      `# Live Remote MCP Server — ${reqOrigin}/mcp\n\nThis URL is a real, live, authless Streamable HTTP MCP endpoint (POST JSON-RPC, Auth: None, no OAuth).\nTo connect in Claude or ChatGPT: Settings -> Connectors / Apps -> Add Custom Connector -> URL: ${reqOrigin}/mcp (Auth: None).\n\n${LLMS_BY_ORIGIN.get(reqOrigin) || walletLlmsTxt(reqOrigin, DOC_OPTS)}`,
       "text/plain; charset=utf-8",
     );
   }

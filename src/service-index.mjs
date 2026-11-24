@@ -31,11 +31,27 @@ function walletOriginInfo(origin) {
   return { origin: safe, host: new URL(safe).host };
 }
 
-export function walletLlmsTxt(origin) {
+function resolveIsL1Mode(btcCustodyMode = process.env.AGENT_BTC_CUSTODY_MODE) {
+  return String(btcCustodyMode || "arkade").trim().toLowerCase() === "l1_0conf";
+}
+
+export function walletLlmsTxt(origin, { btcCustodyMode } = {}) {
   const { origin: base, host } = walletOriginInfo(origin);
+  const isL1 = resolveIsL1Mode(btcCustodyMode);
+  const payList = isL1
+    ? "`lnbc...`, `user@domain`, `bc1...`/`bitcoin:...`, and Base/Solana USDC `0x...`"
+    : "`lnbc...`, `user@domain`, `bc1...`/`bitcoin:...`, `ark1...`, and Base/Solana USDC `0x...`";
+  const recvRails = isL1 ? '"lightning"|"btc"|"usdc"|"solana"' : '"lightning"|"usdc"|"arkade"|"btc"|"solana"';
+  const payToList = isL1
+    ? '"lnbc..."|"user@domain"|"bc1..."|"bitcoin:..."|"0x..."'
+    : '"lnbc..."|"user@domain"|"bc1..."|"bitcoin:..."|"ark1..."|"0x..."';
+  const satRails = isL1 ? "`user@domain`" : "`user@domain`/`ark1...`";
+  const introSub = isL1
+    ? "Non-custodial Bitcoin L1 (2-of-2 MuSig2+CSV, instant 0-conf Lightning) + Base/Solana USDC wallet for AI agents in 60s."
+    : "Non-custodial Bitcoin Lightning + Base/Solana USDC wallet for AI agents in 60s.";
   return `# Agent Wallet (${host})
 
-Non-custodial Bitcoin Lightning + Base USDC wallet for AI agents in 60s. Passkey-secured (Face ID / Touch ID / smartcard), no seed phrase. Pays x402/L402 URLs, \`lnbc...\`, \`user@domain\`, \`bc1...\`/\`bitcoin:...\`, \`ark1...\`, and Base USDC \`0x...\`; auto-converts USDC <-> BTC/Lightning.
+${introSub} Passkey-secured (Face ID / Touch ID / smartcard), no seed phrase. Pays x402/L402/MPP URLs, ${payList}; auto-converts USDC <-> BTC/Lightning.
 
 ## Setup (0 -> 1 -> first payment — pick the path that fits your tools)
 - **Path 1 — MCP (\`${base}/mcp\`):** Call \`wallet { "action": "balance" }\`. Show \`approval_url\` (sign in with your existing Nuri Passkey to reconnect your exact wallet, or click "Create Passkey" on that same page). After the person says "done", repeat with the same \`request_id\` to get \`wallet_key\` (\`npw1_...\`), save it, and pass it on every call. NEVER send the person to \`${base}/\` when you already have MCP.
@@ -44,10 +60,10 @@ Non-custodial Bitcoin Lightning + Base USDC wallet for AI agents in 60s. Passkey
 
 ## 4 Actions (\`balance\`, \`receive\`, \`pay\`, \`history\`)
 - \`balance\`: \`{"action":"balance","wallet_key":"npw1_..."}\` (omit \`wallet_key\` to start; pass \`request_id\` after approval; reports all rails plus any registered \`username@nuriwallet.com\` \`lnurl\`).
-- \`receive\`: \`{"action":"receive","wallet_key":"npw1_...","rail":"lightning"|"usdc"|"arkade"|"btc","amount_sats":5000}\` — or register a permanent Lightning Address: \`{"action":"receive","wallet_key":"npw1_...","lnurl_username":"yourname"}\` (\`yourname@nuriwallet.com\`).
+- \`receive\`: \`{"action":"receive","wallet_key":"npw1_...","rail":${recvRails},"amount_sats":5000}\` — or register a permanent Lightning Address: \`{"action":"receive","wallet_key":"npw1_...","lnurl_username":"yourname"}\` (\`yourname@nuriwallet.com\`).
 - \`pay\` (402 URL): \`{"action":"pay","wallet_key":"npw1_...","to":"https://...","max_amount":"0.25","request_id":"p1"}\`
-- \`pay\` (address/invoice): \`{"action":"pay","wallet_key":"npw1_...","to":"lnbc..."|"user@domain"|"bc1..."|"bitcoin:..."|"ark1..."|"0x...","amount":"0.00025","request_id":"p2"}\`
-  - \`0x...\`: USDC in \`amount\`. \`bc1...\`/\`bitcoin:...\`: BTC decimal in \`amount\` (e.g. \`"0.00025"\` — never convert BTC to sats in your head) or \`amount_sats\`. \`user@domain\`/\`ark1...\`: \`amount_sats\`.
+- \`pay\` (address/invoice): \`{"action":"pay","wallet_key":"npw1_...","to":${payToList},"amount":"0.00025","request_id":"p2"}\`
+  - \`0x...\`: USDC in \`amount\`. \`bc1...\`/\`bitcoin:...\`: BTC decimal in \`amount\` (e.g. \`"0.00025"\` — never convert BTC to sats in your head) or \`amount_sats\`. ${satRails}: \`amount_sats\`.
   - Over-cap error: STOP, ask the person first; if approved, retry with a NEW \`request_id\` and higher \`max_amount\`/\`max_sats\`.
 - \`history\`: \`{"action":"history","wallet_key":"npw1_..."}\`
 
@@ -61,28 +77,45 @@ Non-custodial Bitcoin Lightning + Base USDC wallet for AI agents in 60s. Passkey
 `;
 }
 
-export function walletSkillMd(origin) {
+export function walletSkillMd(origin, { btcCustodyMode } = {}) {
   const { origin: base } = walletOriginInfo(origin);
+  const isL1 = resolveIsL1Mode(btcCustodyMode);
+  const btcDesc = isL1
+    ? "Bitcoin L1 (2-of-2 MuSig2+CSV) + 0-conf Lightning"
+    : "Bitcoin Lightning/Arkade/on-chain BTC";
   return `---
 name: agent-wallet
-description: Non-custodial AI agent wallet for Base USDC (x402, EVM MPP) and Bitcoin Lightning/Arkade/on-chain BTC (L402, Lightning MPP, BOLT11, user@domain) backed by Nuri Passkey PRF. Works via MCP or plain HTTP REST (${base}/v1/wallet).
+description: Non-custodial AI agent wallet for Base + Solana USDC (x402, EVM MPP) and ${btcDesc} (L402, Lightning MPP, BOLT11, user@domain) backed by Nuri Passkey PRF. Works via MCP or plain HTTP REST (${base}/v1/wallet).
 mcp_endpoint: ${base}/mcp
 rest_endpoint: ${base}/v1/wallet
 openapi: ${base}/openapi.json
 ---
 
-${walletLlmsTxt(base)}`;
+${walletLlmsTxt(base, { btcCustodyMode })}`;
 }
 
-export function walletOpenApiJson(origin) {
+export function walletOpenApiJson(origin, { btcCustodyMode } = {}) {
   const { origin: base, host } = walletOriginInfo(origin);
+  const isL1 = resolveIsL1Mode(btcCustodyMode);
+  const btcLabel = isL1 ? "Bitcoin L1 (2-of-2 MuSig2+CSV) + 0-conf Lightning" : "Bitcoin Lightning/Arkade/on-chain BTC";
+  const recvSummary = isL1
+    ? "Get a Lightning invoice (sats), Bitcoin L1 (bc1p...) address, Base/Solana USDC address, or register username@nuriwallet.com"
+    : "Get a Lightning invoice (sats), Base/Solana USDC address, Arkade/L1 address, or register username@nuriwallet.com";
+  const paySummary = isL1
+    ? "Pay any x402/L402/MPP URL, BOLT11 invoice, Lightning Address, bc1.../bitcoin: BTC, or 0x... Base USDC"
+    : "Pay any x402/L402/MPP URL, BOLT11 invoice, Lightning Address, bc1.../bitcoin: BTC, ark1..., or 0x... Base USDC";
+  const toDesc = isL1
+    ? "https:// 402 URL, lnbc..., user@domain, bc1.../bitcoin:..., or 0x..."
+    : "https:// 402 URL, lnbc..., user@domain, bc1.../bitcoin:..., ark1..., or 0x...";
+  const satsDesc = isL1 ? "Sats for user@domain or bc1..." : "Sats for user@domain, ark1..., or bc1...";
+  const railEnum = isL1 ? ["lightning", "btc", "usdc", "solana"] : ["lightning", "usdc", "arkade", "btc", "solana"];
   return {
     openapi: "3.1.0",
     info: {
       title: `Agent Wallet (${host})`,
       version: "2.0.0",
       description:
-        "Non-custodial AI agent wallet for Base USDC (x402, EVM MPP) and Bitcoin Lightning/Arkade/on-chain BTC (L402, Lightning MPP, BOLT11, user@domain). Auto cross-rail USDC <-> BTC/Lightning. Pass wallet_key in the body or as Authorization: Bearer npw1_...",
+        `Non-custodial AI agent wallet for Base + Solana USDC (x402, EVM MPP) and ${btcLabel} (L402, Lightning MPP, BOLT11, user@domain). Auto cross-rail USDC <-> BTC/Lightning. Pass wallet_key in the body or as Authorization: Bearer npw1_...`,
     },
     servers: [{ url: base }],
     paths: {
@@ -111,7 +144,7 @@ export function walletOpenApiJson(origin) {
       "/v1/balance": {
         post: {
           operationId: "walletBalance",
-          summary: "Create/connect Passkey wallet or check Base USDC + Bitcoin Lightning/Arkade balance",
+          summary: `Create/connect Passkey wallet or check Base/Solana USDC + ${btcLabel} balance`,
           requestBody: {
             required: false,
             content: {
@@ -137,7 +170,7 @@ export function walletOpenApiJson(origin) {
       "/v1/receive": {
         post: {
           operationId: "walletReceive",
-          summary: "Get a Lightning invoice (sats), Base USDC address, or Arkade address",
+          summary: recvSummary,
           requestBody: {
             required: true,
             content: {
@@ -146,8 +179,10 @@ export function walletOpenApiJson(origin) {
                   type: "object",
                   properties: {
                     wallet_key: { type: "string" },
-                    rail: { type: "string", enum: ["lightning", "usdc", "arkade"] },
-                    amount_sats: { type: "integer", minimum: 100, description: "Required for rail=lightning" },
+                    rail: { type: "string", enum: railEnum },
+                    amount_sats: { type: "integer", minimum: isL1 ? 340 : 100, description: "Required for rail=lightning" },
+                    lnurl_username: { type: "string", description: "Register permanent username@nuriwallet.com handle" },
+                    request_id: { type: "string" },
                   },
                 },
               },
@@ -164,7 +199,7 @@ export function walletOpenApiJson(origin) {
       "/v1/pay": {
         post: {
           operationId: "walletPay",
-          summary: "Pay any x402/L402 URL, BOLT11 invoice, Lightning Address, bc1.../bitcoin: BTC, ark1..., or 0x... Base USDC",
+          summary: paySummary,
           requestBody: {
             required: true,
             content: {
@@ -174,13 +209,15 @@ export function walletOpenApiJson(origin) {
                   required: ["to"],
                   properties: {
                     wallet_key: { type: "string" },
-                    to: { type: "string", description: "https:// 402 URL, lnbc..., user@domain, bc1.../bitcoin:..., ark1..., or 0x..." },
+                    to: { type: "string", description: toDesc },
+                    url: { type: "string", description: "Optional alias for to on https:// URLs" },
+                    invoice: { type: "string", description: "Optional alias for to on BOLT11 lnbc... invoices" },
                     amount: { type: "string", description: "USDC for 0x..., or decimal BTC for bc1... (e.g. '0.00025')" },
-                    amount_sats: { type: "integer", description: "Sats for user@domain, ark1..., or bc1..." },
+                    amount_sats: { type: "integer", description: satsDesc },
                     max_amount: { type: "string", description: "Max USD cap for 402/invoice payments" },
                     max_sats: { type: "integer", description: "Max sats cap for 402/invoice payments" },
+                    prefer: { type: "string", description: "Optional rail preference on multi-rail 402 URLs" },
                     method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"] },
-                    headers: { type: "object", additionalProperties: { type: "string" } },
                     body: { description: "JSON or string request body for 402 HTTP calls" },
                     dry_run: { type: "boolean" },
                     request_id: { type: "string", description: "Idempotency key (new id after raising a cap)" },
@@ -209,7 +246,7 @@ export function walletOpenApiJson(origin) {
                   type: "object",
                   properties: {
                     wallet_key: { type: "string" },
-                    limit: { type: "integer", minimum: 1, maximum: 100 },
+                    limit: { type: "integer", minimum: 1, maximum: 50 },
                   },
                 },
               },
@@ -233,17 +270,22 @@ export function walletOpenApiJson(origin) {
             action: { type: "string", enum: ["balance", "receive", "pay", "history"] },
             wallet_key: { type: "string", description: "npw1_... key (or send Authorization: Bearer npw1_...)" },
             request_id: { type: "string" },
-            rail: { type: "string", enum: ["lightning", "usdc", "arkade"] },
+            rail: { type: "string", enum: railEnum },
+            lnurl_username: { type: "string" },
             to: { type: "string" },
+            url: { type: "string" },
+            invoice: { type: "string" },
             amount: { type: "string" },
             amount_sats: { type: "integer" },
             max_amount: { type: "string" },
             max_sats: { type: "integer" },
+            prefer: { type: "string" },
             method: { type: "string" },
-            headers: { type: "object", additionalProperties: { type: "string" } },
             body: {},
             dry_run: { type: "boolean" },
-            limit: { type: "integer" },
+            new: { type: "boolean" },
+            index: { type: "integer" },
+            limit: { type: "integer", minimum: 1, maximum: 50 },
           },
         },
       },
@@ -251,8 +293,36 @@ export function walletOpenApiJson(origin) {
   };
 }
 
-function walletIndexHtml(origin) {
+function walletIndexHtml(origin, { btcCustodyMode } = {}) {
   const { origin: base, host } = walletOriginInfo(origin);
+  const isL1 = resolveIsL1Mode(btcCustodyMode);
+  const metaBtcSummary = isL1 ? "Bitcoin L1 (2-of-2 MuSig2+CSV), 0-conf Lightning" : "Bitcoin Lightning, Arkade, on-chain BTC";
+  const statBtcLabel = isL1 ? "Bitcoin (L1 + Lightning)" : "Bitcoin (Lightning / Arkade)";
+  const featureTitle = isL1 ? "2-of-4 Safe + 2-of-2 Bitcoin L1" : "2-of-4 Safe + 2-of-2 Arkade";
+  const featureBody = isL1
+    ? "Base USDC lives in your Safe v1.5.0 smart account and Bitcoin lives directly on Bitcoin L1 (2-of-2 MuSig2+CSV) with instant 0-conf Lightning and per-tx Rust cosigner policy limits."
+    : "Base USDC lives in your Safe v1.5.0 smart account and Bitcoin lives in Arkade/Lightning custody with per-tx Rust cosigner policy limits.";
+  const lnRailItem = isL1
+    ? '<li><span class="ri">⚡</span><div><strong>Bitcoin Lightning (0-Conf L1)</strong><p>Pay and receive real BOLT11 invoices (<code>lnbc…</code>), Lightning addresses (<code>user@nuriwallet.com</code>), L402, and Lightning MPP straight from Bitcoin L1 UTXOs.</p></div></li>'
+    : '<li><span class="ri">⚡</span><div><strong>Bitcoin Lightning &amp; Arkade</strong><p>Pay and receive real BOLT11 invoices (<code>lnbc…</code>), Lightning addresses (<code>user@domain</code>), L402, Lightning MPP, and <code>ark1…</code>.</p></div></li>';
+  const btcRailItem = isL1
+    ? '<li><span class="ri">₿</span><div><strong>On-chain Bitcoin L1 (<code>bc1p…</code>)</strong><p>Hold, receive (<code>bc1p…</code>), and send native Bitcoin (<code>bc1…</code> / <code>bitcoin:</code> BIP21 URIs) using BTC decimals (e.g. <code>0.00025</code>) or sats.</p></div></li>'
+    : '<li><span class="ri">₿</span><div><strong>On-chain Bitcoin</strong><p>Send to native SegWit <code>bc1…</code> addresses or <code>bitcoin:</code> BIP21 URIs using BTC decimals (e.g. <code>0.00025</code>) or sats.</p></div></li>';
+  const toolBalanceCopy = isL1
+    ? "Omit <code>wallet_key</code> to start Passkey onboarding (returns <code>approval_url</code>). Pass <code>wallet_key</code> to inspect Base/Solana USDC + Bitcoin L1/Lightning balances."
+    : "Omit <code>wallet_key</code> to start Passkey onboarding (returns <code>approval_url</code>). Pass <code>wallet_key</code> to inspect Base/Solana USDC + Bitcoin Lightning/Arkade balances.";
+  const toolReceiveCopy = isL1
+    ? 'Get Base/Solana USDC or Bitcoin L1 (<code>bc1p…</code>) deposit addresses, register <code>username@nuriwallet.com</code>, or mint a Lightning BOLT11 invoice (<code>rail: "lightning", amount_sats</code>).'
+    : 'Get Base/Solana USDC or Arkade deposit addresses, register <code>username@nuriwallet.com</code>, or mint a fresh Lightning BOLT11 funding invoice (<code>rail: "lightning", amount_sats</code>).';
+  const toolPayCopy = isL1
+    ? "Universal pay: pass <code>to</code> as any <code>https://</code> 402 URL, <code>lnbc…</code>, <code>user@domain</code>, <code>bc1…</code>/<code>bitcoin:…</code>, or <code>0x…</code>. Enforces <code>max_amount</code>/<code>max_sats</code> caps."
+    : "Universal pay: pass <code>to</code> as any <code>https://</code> 402 URL, <code>lnbc…</code>, <code>user@domain</code>, <code>bc1…</code>/<code>bitcoin:…</code>, <code>ark1…</code>, or <code>0x…</code>. Enforces <code>max_amount</code>/<code>max_sats</code> caps.";
+  const toolHistoryCopy = isL1
+    ? "Recent receipts across Base USDC, Bitcoin L1, Lightning, and cross-rail bridges with settlement proofs."
+    : "Recent receipts across Base USDC, Lightning, Arkade, and cross-rail bridges with settlement proofs.";
+  const footerLine = isL1
+    ? "Nuri Agent Wallet · Non-custodial Passkey PRF + 2-of-4 Base Safe USDC + 2-of-2 Bitcoin L1 / 0-conf Lightning."
+    : "Nuri Agent Wallet · Non-custodial Passkey PRF + 2-of-4 Base Safe USDC + 2-of-2 Arkade Bitcoin/Lightning.";
   const mcpUrl = `${base}/mcp`;
   const restUrl = `${base}/v1/wallet`;
   const openapiUrl = `${base}/openapi.json`;
@@ -272,12 +342,12 @@ function walletIndexHtml(origin) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${host} — Agent Wallet</title>
-<meta name="description" content="One passkey gives any AI agent non-custodial Bitcoin Lightning, Arkade, on-chain BTC, and Base USDC via 4 MCP actions or plain HTTP REST. No OAuth, no seed phrase, no custody.">
+<meta name="description" content="One passkey gives any AI agent non-custodial ${metaBtcSummary}, and Base USDC via 4 MCP actions or plain HTTP REST. No OAuth, no seed phrase, no custody.">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="icon" type="image/x-icon" href="/favicon.ico" sizes="any">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <meta property="og:title" content="${host} — Agent Wallet">
-<meta property="og:description" content="Non-custodial Bitcoin Lightning, Arkade, on-chain BTC, and Base USDC wallet for AI agents. Authless MCP + plain HTTP REST.">
+<meta property="og:description" content="Non-custodial ${metaBtcSummary}, and Base USDC wallet for AI agents. Authless MCP + plain HTTP REST.">
 <meta property="og:image" content="${base}/apple-touch-icon.png">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -476,7 +546,7 @@ footer a:hover{color:var(--fg)}
   <div class="hero-body">
     <div class="badge"><span class="dot"></span>live · non-custodial · MCP + plain HTTP REST</div>
     <h1>A real money account<br>for <em>any AI agent</em>.</h1>
-    <p class="lede">One Passkey gives any AI agent <b>Bitcoin Lightning, Arkade, on-chain BTC,
+    <p class="lede">One Passkey gives any AI agent <b>${metaBtcSummary},
     and Base USDC</b> — with automatic cross-rail conversion, 4 tiny actions, and zero seed phrases.
     Nothing is custodied. Works with MCP or plain <code>curl</code>.</p>
 
@@ -544,7 +614,7 @@ footer a:hover{color:var(--fg)}
           <div class="stat-sub">Pays x402, EVM MPP, 0x… + auto-bridges to BTC/LN</div>
         </div>
         <div class="stat">
-          <div class="stat-label">Bitcoin (Lightning / Arkade)</div>
+          <div class="stat-label">${statBtcLabel}</div>
           <div class="stat-val" id="bal-sats">0 sats</div>
           <div class="stat-sub" id="bal-btc">0 BTC · Pays L402, LN MPP, BOLT11, bc1…</div>
         </div>
@@ -557,17 +627,24 @@ footer a:hover{color:var(--fg)}
         <button type="button" class="btn btn-secondary btn-sm" data-copy-el="addr-usdc">Copy</button>
       </div>
       <div id="ark-addr-wrap">
-        <div class="muted">Arkade BTC</div>
+        <div class="muted" id="addr-btc-label">${isL1 ? "Bitcoin L1 (2-of-2 MuSig2+CSV)" : "Arkade BTC"}</div>
         <div class="code-box">
           <code id="addr-arkade">—</code>
           <button type="button" class="btn btn-secondary btn-sm" data-copy-el="addr-arkade">Copy</button>
+        </div>
+      </div>
+      <div id="lnurl-addr-wrap" class="hidden">
+        <div class="muted">Lightning Address (LNURL)</div>
+        <div class="code-box">
+          <code id="addr-lnurl">—</code>
+          <button type="button" class="btn btn-secondary btn-sm" data-copy-el="addr-lnurl">Copy</button>
         </div>
       </div>
 
       <h3>Fund via Bitcoin Lightning</h3>
       <div class="row">
         <label for="ln-sats" class="muted">Sats</label>
-        <input id="ln-sats" class="input-sats" type="number" min="100" step="100" value="5000" inputmode="numeric">
+        <input id="ln-sats" class="input-sats" type="number" min="${isL1 ? 340 : 100}" step="100" value="5000" inputmode="numeric">
         <button id="btn-ln-invoice" type="button" class="btn btn-primary btn-sm">Create Lightning Funding Invoice (sats)</button>
       </div>
       <div id="ln-invoice-box" class="hidden" style="margin-top:12px">
@@ -627,7 +704,7 @@ footer a:hover{color:var(--fg)}
   <p class="sub">Most money MCPs make you register an OAuth client before an agent can even list tools. Connect <code>${mcpUrl}</code> or call <code>POST ${restUrl}</code> immediately — custody stays on your Passkey, never on this server.</p>
   <div class="g g3">
     <div class="card"><h3><span>⚿</span>Passkey PRF</h3><p>Root keys are derived in your browser from WebAuthn PRF (Face ID, Touch ID, or smartcard) and never touch our server.</p></div>
-    <div class="card"><h3><span>⛉</span>2-of-4 Safe + 2-of-2 Arkade</h3><p>Base USDC lives in your Safe smart account and Bitcoin lives in Arkade/Lightning custody with per-transaction policy limits.</p></div>
+    <div class="card"><h3><span>⛉</span>${featureTitle}</h3><p>${featureBody}</p></div>
     <div class="card"><h3><span>◇</span>Zero-MCP REST + MCP</h3><p>Works natively in MCP clients (Claude, ChatGPT, Goose, Cursor) and over plain HTTP JSON (<code>${restUrl}</code>) with any agent that has <code>curl</code>.</p></div>
   </div>
 </div></section>
@@ -636,8 +713,8 @@ footer a:hover{color:var(--fg)}
   <h2>Everything it pays &amp; connects to</h2>
   <p class="sub">Real live rails — pay any machine-payable URL or crypto rail directly, and plug into live Nuri companion services.</p>
   <ul class="rails">
-    <li><span class="ri">⚡</span><div><strong>Bitcoin Lightning &amp; Arkade</strong><p>Pay and receive real BOLT11 invoices (<code>lnbc…</code>), Lightning addresses (<code>user@domain</code>), L402, Lightning MPP, and <code>ark1…</code>.</p></div></li>
-    <li><span class="ri">₿</span><div><strong>On-chain Bitcoin</strong><p>Send to native SegWit <code>bc1…</code> addresses or <code>bitcoin:</code> BIP21 URIs using BTC decimals (e.g. <code>0.00025</code>) or sats.</p></div></li>
+    ${lnRailItem}
+    ${btcRailItem}
     <li><span class="ri">◈</span><div><strong>Base USDC &amp; x402 / MPP</strong><p>Pay any HTTP <code>402 Payment Required</code> API (x402, EVM MPP) or <code>0x…</code> address on Base. Gas sponsored.</p></div></li>
     <li><span class="ri">⇄</span><div><strong>Auto cross-rail</strong><p>Hold only Bitcoin? Pay a USDC x402 API. Hold only USDC? Pay a Lightning invoice or <code>bc1…</code> address. Converts automatically under the hood.</p></div></li>
     <li><span class="ri">☎</span><div><strong>Paid Calls &amp; SMS</strong><p>Live companion at <a href="https://calls.nuri.com">calls.nuri.com</a> — outbound voice calls &amp; SMS paid per call via x402.</p></div></li>
@@ -651,10 +728,10 @@ footer a:hover{color:var(--fg)}
   <h2>One tool, four actions</h2>
   <p class="sub">Tiny footprint (&lt;2.3% of a 64k context window) so even small 9B local models never get lost.</p>
   <div class="tools">
-    <div class="tool"><code>balance</code><p>Omit <code>wallet_key</code> to start Passkey onboarding (returns <code>approval_url</code>). Pass <code>wallet_key</code> to inspect Base USDC + Bitcoin Lightning/Arkade balances.</p></div>
-    <div class="tool"><code>receive</code><p>Get Base USDC or Arkade deposit addresses, or mint a fresh Lightning BOLT11 funding invoice (<code>rail: "lightning", amount_sats</code>).</p></div>
-    <div class="tool"><code>pay</code><p>Universal pay: pass <code>to</code> as any <code>https://</code> 402 URL, <code>lnbc…</code>, <code>user@domain</code>, <code>bc1…</code>/<code>bitcoin:…</code>, <code>ark1…</code>, or <code>0x…</code>. Enforces <code>max_amount</code>/<code>max_sats</code> caps.</p></div>
-    <div class="tool"><code>history</code><p>Recent receipts across Base USDC, Lightning, Arkade, and cross-rail bridges with settlement proofs.</p></div>
+    <div class="tool"><code>balance</code><p>${toolBalanceCopy}</p></div>
+    <div class="tool"><code>receive</code><p>${toolReceiveCopy}</p></div>
+    <div class="tool"><code>pay</code><p>${toolPayCopy}</p></div>
+    <div class="tool"><code>history</code><p>${toolHistoryCopy}</p></div>
   </div>
 </div></section>
 
@@ -702,7 +779,7 @@ curl -sX POST <span class="s">${base}/v1/pay</span> \\
 </div></section>
 
 <footer><div class="wrap">
-  <div>Nuri Agent Wallet · Non-custodial Passkey PRF + 2-of-4 Base Safe USDC + 2-of-2 Arkade Bitcoin/Lightning.</div>
+  <div>${footerLine}</div>
   <div class="fl">
     <a href="${llmsUrl}">llms.txt</a>
     <a href="${skillUrl}">skill.md</a>
@@ -754,7 +831,10 @@ curl -sX POST <span class="s">${base}/v1/pay</span> \\
     balBtc: $("bal-btc"),
     addrUsdc: $("addr-usdc"),
     addrArkade: $("addr-arkade"),
+    addrBtcLabel: $("addr-btc-label"),
     arkWrap: $("ark-addr-wrap"),
+    lnurlWrap: $("lnurl-addr-wrap"),
+    addrLnurl: $("addr-lnurl"),
     lnSats: $("ln-sats"),
     btnLnInvoice: $("btn-ln-invoice"),
     lnBox: $("ln-invoice-box"),
@@ -863,11 +943,23 @@ curl -sX POST <span class="s">${base}/v1/pay</span> \\
       el.balSats.textContent = satsNum.toLocaleString() + " sats";
       el.balBtc.textContent = btc + " BTC · Pays L402, LN MPP, BOLT11, bc1…";
       el.addrUsdc.textContent = connected.address || "—";
-      if (connected.arkade_address) {
+      const displayBtcAddr = connected.btc_address || connected.arkade_address || "";
+      if (displayBtcAddr) {
         el.arkWrap.classList.remove("hidden");
-        el.addrArkade.textContent = connected.arkade_address;
+        if (el.addrBtcLabel) {
+          el.addrBtcLabel.textContent = connected.btc_address ? "Bitcoin L1 (2-of-2 MuSig2+CSV)" : "Arkade BTC";
+        }
+        el.addrArkade.textContent = displayBtcAddr;
       } else {
         el.arkWrap.classList.add("hidden");
+      }
+      if (el.lnurlWrap && el.addrLnurl) {
+        if (connected.lnurl) {
+          el.lnurlWrap.classList.remove("hidden");
+          el.addrLnurl.textContent = connected.lnurl;
+        } else {
+          el.lnurlWrap.classList.add("hidden");
+        }
       }
       const hasKey = Boolean(connected.wallet_key);
       el.keyDisplay.textContent = hasKey ? (keyRevealed ? connected.wallet_key : MASKED_KEY) : "(wallet_key already issued in an earlier session)";
@@ -897,7 +989,10 @@ curl -sX POST <span class="s">${base}/v1/pay</span> \\
     connected = {
       wallet_key: res.wallet_key || fallbackKey || (connected && connected.wallet_key) || "",
       address: res.address || (connected && connected.address) || "",
+      btc_custody_mode: res.btc_custody_mode || (connected && connected.btc_custody_mode) || "",
+      btc_address: res.btc_address || (connected && connected.btc_address) || "",
       arkade_address: res.arkade_address || (connected && connected.arkade_address) || "",
+      lnurl: res.lnurl || (connected && connected.lnurl) || "",
       available: res.available !== undefined ? res.available : (connected ? connected.available : "0"),
       sats: res.sats !== undefined ? res.sats : (connected ? connected.sats : 0),
       btc: res.btc !== undefined ? res.btc : (connected ? connected.btc : "0"),
@@ -1028,7 +1123,8 @@ curl -sX POST <span class="s">${base}/v1/pay</span> \\
       const paySats = res.amount_sats ?? sats;
       const feeSats = res.fee_sats ?? 0;
       const netSats = res.expected_sats ?? sats;
-      el.lnMeta.textContent = "Pay " + paySats + " sats (fee " + feeSats + " sats · nets " + netSats + " sats into Arkade custody)";
+      const custodyLabel = res.btc_custody_mode === "l1_0conf" ? "into your Bitcoin L1 wallet" : "into Arkade custody";
+      el.lnMeta.textContent = "Pay " + paySats + " sats (fee " + feeSats + " sats · nets " + netSats + " sats " + custodyLabel + ")";
       el.lnText.textContent = res.invoice;
       if (BOLT11_RE.test(res.invoice)) {
         el.lnUri.href = "lightning:" + res.invoice;
@@ -1197,8 +1293,8 @@ const LEGACY_ROLES = {
   },
 };
 
-export function serviceIndexHtml(role, { origin } = {}) {
-  if (role === "wallet") return walletIndexHtml(origin);
+export function serviceIndexHtml(role, { origin, btcCustodyMode } = {}) {
+  if (role === "wallet") return walletIndexHtml(origin, { btcCustodyMode });
   const r = LEGACY_ROLES[role];
   if (!r) throw new Error(`service_index_role_unknown: ${role}`);
   const others = ["wallet", ...Object.keys(LEGACY_ROLES)].filter((name) => name !== role)

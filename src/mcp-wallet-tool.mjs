@@ -119,33 +119,61 @@ function unconfirmedSentence(reason, noun) {
   return ERR_UNKNOWN;
 }
 
+const IS_L1_CUSTODY = String(process.env.AGENT_BTC_CUSTODY_MODE || "arkade").trim().toLowerCase() === "l1_0conf";
+
 export const WALLET_TOOL = {
   name: "wallet",
   title: "Agent USDC + Bitcoin/Lightning wallet",
-  description: "Agent's own Base + Solana USDC and Bitcoin Lightning/Arkade/on-chain wallet (4 actions: balance, receive, pay, history). First time: call balance with no wallet_key to create or connect a Nuri Passkey wallet. Base USDC <-> Bitcoin/Lightning converts automatically.",
+  description: IS_L1_CUSTODY
+    ? "Agent's Base+Solana USDC & Bitcoin L1 + Lightning wallet (balance, receive, pay, history). Omit wallet_key on first balance call to create/connect Passkey; USDC <-> BTC/LN converts automatically."
+    : "Agent's Base+Solana USDC & Bitcoin Lightning/Arkade/on-chain wallet (balance, receive, pay, history). Omit wallet_key on first balance call to create/connect Passkey; USDC <-> BTC/LN converts automatically.",
   inputSchema: {
     type: "object", additionalProperties: false, required: ["action"],
     properties: {
-      action: { type: "string", enum: ["balance", "receive", "pay", "history", "lnurl"], description: "balance: show USDC + Bitcoin sats & addresses (or create/connect a Nuri Passkey wallet when wallet_key is omitted). receive: get Base USDC address, Arkade BTC address, Lightning BOLT11 invoice, or register a username@nuriwallet.com Lightning address (lnurl_username). pay: pay any https:// 402 API (x402/L402/MPP), BOLT11 invoice, user@domain, bc1.../bitcoin: BTC address, ark1... Arkade, or 0x... Base USDC. history: past payments and receives." },
+      action: {
+        type: "string",
+        enum: ["balance", "receive", "pay", "history", "lnurl"],
+        description: IS_L1_CUSTODY
+          ? "balance: show USDC+sats or create/connect Passkey. receive: USDC, bc1p... BTC, BOLT11, or username@nuriwallet.com (lnurl_username). pay: https:// 402 (x402/L402/MPP), lnbc..., user@domain, bc1.../bitcoin:, or 0x.... history: past txs."
+          : "balance: show USDC+sats or create/connect Passkey. receive: USDC, Arkade/BTC, BOLT11, or username@nuriwallet.com (lnurl_username). pay: https:// 402 (x402/L402/MPP), lnbc..., user@domain, bc1.../bitcoin:, ark1..., or 0x.... history: past txs.",
+      },
       lnurl_username: { type: "string", maxLength: 64, pattern: "^[a-zA-Z0-9._-]+$", description: "receive: register username@nuriwallet.com." },
-      amount_msat: { type: "integer", description: "lnurl callback millisats." },
-      wallet_key: { type: "string", pattern: TOKEN.source, description: "Wallet key (npw1_...) returned after Passkey approval. Send on every call once connected." },
-      to: { type: "string", maxLength: 4096, description: "For pay: destination — https:// paid API, lnbc... BOLT11 invoice, user@domain Lightning Address, bc1.../bitcoin:... on-chain Bitcoin, ark1... Arkade, or 0x... Base USDC." },
-      url: { type: "string", maxLength: 4096, description: "Optional alias for to when paying a paid https:// URL." },
-      invoice: { type: "string", maxLength: 4096, description: "Optional alias for to when paying a BOLT11 lnbc... invoice." },
-      rail: { type: "string", enum: ["usdc", "solana", "lightning", "arkade"], description: "For receive: usdc (Base USDC), solana (native Solana USDC), lightning (BOLT11 invoice; needs amount_sats), or arkade (Arkade BTC)." },
-      amount: { type: "string", pattern: "^(0|[1-9][0-9]{0,71})(\\.[0-9]{1,8})?$", description: "For 0x... Base USDC: decimal USDC (e.g. \"1.50\"). For bc1... on-chain Bitcoin: pass decimal BTC directly here (e.g. \"0.00025\") — do not convert BTC to sats yourself." },
-      amount_sats: { type: "integer", minimum: 1, description: "Whole satoshis (for receive rail=lightning, or pay to user@domain / ark1... / bc1... when given in sats; omit for lnbc... invoices)." },
-      max_amount: { type: "string", pattern: AMOUNT.source, description: "Max USDC this one pay call may cost on Base or Solana, e.g. \"0.25\"." },
-      max_sats: { type: "integer", minimum: 1, description: "Max satoshis (incl. fees) this one Lightning / L402 / BTC pay may cost." },
-      prefer: { type: "string", maxLength: 64, description: "Optional on multi-rail 402 URLs: lightning, l402, mpp:lightning, usdc, x402, solana, or mpp:evm (omitted = auto-pick funded rail)." },
-      dry_run: { type: "boolean", description: "For pay on https:// URLs: inspect 402 price without paying." },
-      method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"], description: "For pay on https:// URLs: HTTP method (default GET)." },
-      body: { description: "For pay on https:// URLs: HTTP request body." },
-      request_id: { type: "string", minLength: 1, maxLength: 64, description: "Short idempotency label (1-64 chars). Reuse unchanged on retry or after Passkey approval; use a NEW request_id after an over-cap error." },
-      new: { type: "boolean", description: "true starts a fresh Nuri Passkey create/connect ceremony." },
-      index: { type: "integer", minimum: 0, maximum: 1000000, description: "Deterministic wallet slot index (default 0; use 1, 2... for separate agent wallets under one Passkey)." },
-      limit: { type: "integer", minimum: 1, maximum: 50, description: "For history: max entries (default 25)." },
+      amount_msat: { type: "integer", description: "lnurl callback msat." },
+      wallet_key: { type: "string", pattern: TOKEN.source, description: "npw1_... key from approval; send on every call." },
+      to: {
+        type: "string",
+        maxLength: 4096,
+        description: IS_L1_CUSTODY
+          ? "pay target: https:// 402, lnbc..., user@domain, bc1.../bitcoin:, or 0x..."
+          : "pay target: https:// 402, lnbc..., user@domain, bc1.../bitcoin:, ark1..., or 0x...",
+      },
+      url: { type: "string", maxLength: 4096, description: "Alias for to (https:// URL)." },
+      invoice: { type: "string", maxLength: 4096, description: "Alias for to (lnbc... BOLT11)." },
+      rail: {
+        type: "string",
+        enum: IS_L1_CUSTODY ? ["usdc", "solana", "btc", "lightning"] : ["usdc", "solana", "btc", "lightning", "arkade"],
+        description: IS_L1_CUSTODY
+          ? "receive rail: usdc, solana, btc (bc1p...), or lightning (amount_sats)."
+          : "receive rail: usdc, solana, btc/arkade, or lightning (amount_sats).",
+      },
+      amount: { type: "string", pattern: "^(0|[1-9][0-9]{0,71})(\\.[0-9]{1,8})?$", description: "0x... USDC amount, or decimal BTC for bc1... (e.g. \"0.00025\")." },
+      amount_sats: {
+        type: "integer",
+        minimum: 1,
+        description: IS_L1_CUSTODY
+          ? "Sats (for receive lightning, user@domain, or bc1...; omit for lnbc...)."
+          : "Sats (for receive lightning, user@domain, ark1..., or bc1...; omit for lnbc...).",
+      },
+      max_amount: { type: "string", pattern: AMOUNT.source, description: "Max USDC cap for pay (Base/Solana)." },
+      max_sats: { type: "integer", minimum: 1, description: "Max sats cap (incl. fees) for LN/BTC pay." },
+      prefer: { type: "string", maxLength: 64, description: "402 rail hint: lightning|l402|mpp:lightning|usdc|x402|solana|mpp:evm." },
+      dry_run: { type: "boolean", description: "pay https://: quote price without paying." },
+      method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"], description: "pay https:// method (default GET)." },
+      body: { description: "pay https:// request body." },
+      request_id: { type: "string", minLength: 1, maxLength: 64, description: "Idempotency ID (1-64 chars); use NEW id after over-cap." },
+      new: { type: "boolean", description: "true starts new Passkey connect." },
+      index: { type: "integer", minimum: 0, maximum: 1000000, description: "Wallet slot index (default 0)." },
+      limit: { type: "integer", minimum: 1, maximum: 50, description: "history max entries (default 25)." },
     },
   },
   outputSchema: {
@@ -158,10 +186,21 @@ export const WALLET_TOOL = {
       error: { type: "string", description: "One plain sentence saying what went wrong and the next thing to do, when ok is false." },
       available: { type: "string", description: "Base USDC balance." },
       usdc: { type: "string", description: "Base USDC balance (same as available)." },
-      sats: { type: "integer", description: "Spendable Bitcoin balance on Arkade in satoshis." },
-      btc: { type: "string", description: "Spendable Bitcoin balance on Arkade in BTC." },
+      solana_address: { type: "string", description: "Solana USDC deposit address." },
+      solana_usdc: { type: "string", description: "Solana USDC balance." },
+      sats: { type: "integer", description: "Spendable Bitcoin balance in satoshis." },
+      btc: { type: "string", description: "Spendable Bitcoin balance in BTC." },
+      btc_custody_mode: { type: "string", description: "Bitcoin custody mode (l1_0conf or arkade)." },
+      btc_address: { type: "string", description: "2-of-2 MuSig2+CSV Bitcoin L1 Taproot address (bc1p..., in l1_0conf mode)." },
+      btc_debt_sats: { type: "integer", description: "Unsettled LEND micro-advance debt in satoshis." },
+      btc_pending_l1_sweep_sats: { type: "integer", description: "Sub-floor incoming Lightning credit queued for L1 sweep." },
+      btc_unconfirmed_sats: { type: "integer", description: "External unconfirmed L1 deposits awaiting confirmation." },
+      btc_balance_unavailable: { type: "boolean" },
+      lnurl: { type: "string", description: "Primary registered Lightning Address (username@nuriwallet.com)." },
+      lnurl_addresses: { type: "array", items: { type: "string" } },
+      username: { type: "string" },
       address: { type: "string", description: "2-of-4 Base Safe USDC address." },
-      arkade_address: { type: "string", description: "2-of-2 Nuri Arkade off-chain Bitcoin address (`ark1...`)." },
+      arkade_address: { type: "string", description: "2-of-2 Nuri Arkade off-chain Bitcoin address (`ark1...`, in arkade mode)." },
       owner_address: { type: "string", description: "Main Nuri wallet EOA that granted this agent wallet." },
       wallet_key: { type: "string", description: "Deterministic wallet key (`npw1_...`). Save and send on every call." },
       http_status: { type: "integer", description: "HTTP status code returned by the target endpoint." },
@@ -905,11 +944,11 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
     if (isPrfWalletKey(args?.wallet_key)) {
       return await prfCoordinator().handleReceive(args);
     }
-    if (args.rail === "lightning" || args.rail === "arkade" || args.amount_sats !== undefined) {
+    if (args.rail === "lightning" || args.rail === "arkade" || args.rail === "btc" || args.rail === "solana" || args.amount_sats !== undefined) {
       return {
         ok: false,
         status: "failed",
-        error: "Bitcoin Lightning and Arkade require a Nuri Passkey wallet. Call wallet balance with new:true to connect.",
+        error: "Bitcoin Lightning, BTC, and Solana require a Nuri Passkey wallet. Call wallet balance with new:true to connect.",
       };
     }
     return await fund(args, { signal });

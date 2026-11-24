@@ -1526,7 +1526,10 @@ export function createPrfWalletCoordinator({
     return {
       ok: false,
       status: "failed",
-      error: "rail must be usdc, lightning, or arkade.",
+      error:
+        ensureArkade().custodyMode === "l1_0conf"
+          ? "rail must be usdc, solana, btc, or lightning."
+          : "rail must be usdc, solana, btc, lightning, or arkade.",
     };
   }
 
@@ -1668,7 +1671,7 @@ export function createPrfWalletCoordinator({
     const bridged = await bridgeUsdcToArkade({
       walletRecord: wallet,
       secrets,
-      neededSats: Number(BigInt(facts.amountSats) + feeBuffer),
+      neededSats: Number(BigInt(facts.amountSats) + estOverhead),
       opId,
     });
     const paid = await ensureArkade().payBolt11Invoice({
@@ -1782,7 +1785,7 @@ export function createPrfWalletCoordinator({
         status: polled.status,
         request_id: reqId,
         rail: "btc",
-        funded_from: "arkade",
+        funded_from: btcRuntime.custodyMode === "l1_0conf" ? "l1_0conf" : "arkade",
         to: btcAddress,
         amount_sats: amountSats,
         fee_sats: Math.max(0, paidLn.totalSats - amountSats),
@@ -1992,7 +1995,9 @@ export function createPrfWalletCoordinator({
           ok: false,
           status: "failed",
           error:
-            "Provide to (https:// paid API, lnbc... BOLT11, user@domain, bc1.../bitcoin:... on-chain Bitcoin, ark1... Arkade, or 0x... Base USDC).",
+            ensureArkade().custodyMode === "l1_0conf"
+              ? "Provide to (https:// paid API, lnbc... BOLT11, user@domain, bc1.../bitcoin:... on-chain Bitcoin, or 0x... Base USDC)."
+              : "Provide to (https:// paid API, lnbc... BOLT11, user@domain, bc1.../bitcoin:... on-chain Bitcoin, ark1... Arkade, or 0x... Base USDC).",
         };
       }
 
@@ -2377,7 +2382,7 @@ export function createPrfWalletCoordinator({
               status: polled.status,
               request_id: reqId,
               rail: "usdc",
-              funded_from: "arkade",
+              funded_from: ensureArkade().custodyMode === "l1_0conf" ? "l1_0conf" : "arkade",
               to: toAddr,
               amount_sats: paidLn.totalSats,
               ...(swap.swapId ? { swap_id: swap.swapId } : {}),
@@ -2421,7 +2426,7 @@ export function createPrfWalletCoordinator({
             status: "done",
             request_id: reqId,
             rail: "usdc",
-            funded_from: "arkade",
+            funded_from: ensureArkade().custodyMode === "l1_0conf" ? "l1_0conf" : "arkade",
             bridged,
             to: toAddr,
             receipt: {
@@ -2455,7 +2460,9 @@ export function createPrfWalletCoordinator({
         ok: false,
         status: "failed",
         error:
-          "Unrecognized destination. Use an https:// URL, BOLT11 lnbc... invoice, user@domain, bc1.../bitcoin:... on-chain Bitcoin, ark1... address, or 0x... Base address. For other assets like XMR, use https://swapkit.nuri.com/mcp.",
+          ensureArkade().custodyMode === "l1_0conf"
+            ? "Unrecognized destination. Use an https:// URL, BOLT11 lnbc... invoice, user@domain, bc1.../bitcoin:... on-chain Bitcoin, or 0x... Base address. For other assets like XMR, use https://swapkit.nuri.com/mcp."
+            : "Unrecognized destination. Use an https:// URL, BOLT11 lnbc... invoice, user@domain, bc1.../bitcoin:... on-chain Bitcoin, ark1... address, or 0x... Base address. For other assets like XMR, use https://swapkit.nuri.com/mcp.",
       };
     } catch (err) {
       if (err?.code === "over_max_amount") {

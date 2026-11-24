@@ -32,23 +32,42 @@ const COMPANION_DIRECTORY = [
   "- Browser / checkout: for web stores, use a browser tool to get the BOLT11 or bc1.../bitcoin: address, then pay with wallet pay.",
 ];
 
-export function instructions(toolNames = ALWAYS_TOOLS) {
+export function instructions(toolNames = ALWAYS_TOOLS, { btcCustodyMode = process.env.AGENT_BTC_CUSTODY_MODE } = {}) {
+  const isL1 = String(btcCustodyMode || "arkade").trim().toLowerCase() === "l1_0conf";
   const names = toolNames.filter(name => name !== "connect_wallet");
   const here = new Set(names);
+  const whichWallet = isL1
+    ? "- wallet: the agent's own Base + Solana USDC and Pure-L1 Bitcoin (2-of-2 MuSig2+CSV) + 0-conf Lightning wallet (4 actions: balance, receive, pay, history). Cross-rail USDC <-> Bitcoin/Lightning converts automatically."
+    : WHICH.wallet;
 
   // Dedicated wallet-only server: keep rules 100% focused on wallet_key + Passkey create/connect + companion directory.
   if (here.size === 1 && here.has("wallet")) {
+    const railRule = isL1
+      ? "Bitcoin (sats + btc_address + lnurl + Lightning receive) AND Base/Solana USDC (available + address)"
+      : "Bitcoin (sats + arkade_address + Lightning receive) AND Base USDC (available + 0x address)";
+    const payDestList = isL1
+      ? "https:// 402 API, lnbc..., user@domain, bc1.../bitcoin:..., or 0x..."
+      : "https:// 402 API, lnbc..., user@domain, bc1.../bitcoin:..., ark1..., or 0x...";
+    const receiveEx = isL1
+      ? 'receive → wallet {action: "receive", wallet_key, rail: "lightning"|"btc"|"usdc"|"solana", amount_sats?, lnurl_username?}'
+      : 'receive → wallet {action: "receive", wallet_key, rail: "lightning"|"usdc"|"arkade"|"btc"|"solana", amount_sats?, lnurl_username?}';
+    const payEx = isL1
+      ? 'pay invoice / address → wallet {action: "pay", wallet_key, to: "lnbc..."|"user@domain"|"bc1..."|"0x...", amount?/amount_sats?, request_id} (0x... = USDC in amount; bc1... = BTC directly in amount e.g. "0.00025" or amount_sats; user@domain = amount_sats).'
+      : EXAMPLES.find(([, text]) => text.startsWith("pay invoice"))[1];
     return `Tool here: wallet.
-${WHICH.wallet}
+${whichWallet}
 
 RULES
 1. No wallet_key: call wallet {action: "balance"}. Show approval_url: sign in with your existing Nuri Passkey to reconnect your exact wallet (new users click "Create Passkey" on that same page). After approval, repeat balance with same request_id to get wallet_key (npw1_...).
-2. Hold wallet_key: send on every call. On balance/connect, ALWAYS show BOTH rails: Bitcoin (sats + arkade_address + Lightning receive) AND Base USDC (available + 0x address).
-3. wallet pay accepts any \`to\`: https:// 402 API, lnbc..., user@domain, bc1.../bitcoin:..., ark1..., or 0x.... Include a short request_id.
+2. Hold wallet_key: send on every call. On balance/connect, ALWAYS show BOTH rails: ${railRule}.
+3. wallet pay accepts any \`to\`: ${payDestList}. Include a short request_id.
 4. Over-cap error: STOP, state exact price; never raise max_amount/max_sats without asking. After approval, retry with NEW request_id. Other errors: report verbatim. Follow next.
 
 EXAMPLES
-${EXAMPLES.filter(([need]) => need.every(name => here.has(name))).map(([, text]) => `- ${text}`).join("\n")}
+- ${EXAMPLES.find(([, text]) => text.startsWith("setup / balance"))[1]}
+- ${receiveEx}
+- ${EXAMPLES.find(([, text]) => text.startsWith("pay 402 API"))[1]}
+- ${payEx}
 
 COMPANION TOOLS (separate MCPs — NEVER pass companion MCP URLs like swapkit.nuri.com/mcp or XMR addresses into wallet pay; reply with the companion URL)
 ${COMPANION_DIRECTORY.join("\n")}
@@ -60,7 +79,7 @@ Reply short, in the person's language.`;
   const other = [...new Set(away.map(name => HOME[name]))].map(url => `${away.filter(name => HOME[name] === url).join(", ")}: https://${url}`);
   const connect = here.has("account") ? "only if you hold no session: account status → show link → after tap, the same call with its request_id gives the session." : "only if you hold no session: wallet balance new:true.";
   return `Tools here: ${names.join(", ")}.${other.length ? ` Elsewhere (separate MCP server, same session): ${other.join("; ")}.` : ""}
-${names.map(name => WHICH[name]).filter(Boolean).join("\n")}
+${names.map(name => (name === "wallet" ? whichWallet : WHICH[name])).filter(Boolean).join("\n")}
 
 RULES
 1. Hold a session: send it on every call and go straight to the tool. Connect ${connect}

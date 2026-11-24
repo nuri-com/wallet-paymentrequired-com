@@ -607,6 +607,7 @@ export function createPrfHttp402Payer({
       const nativePayable = usdcBal >= requiredUnits;
       let crossRail = false;
       let fundedFrom = null;
+      const btcFundedFrom = arkadeRuntime?.custodyMode === "l1_0conf" ? "l1_0conf" : "arkade";
       if (!nativePayable && ensureRailFunded) {
         if (quoteIsTempo && Number(quoteTarget.chainId) === TEMPO_MAINNET_CHAIN_ID) {
           const baseBal =
@@ -621,7 +622,7 @@ export function createPrfHttp402Payer({
               (await arkadeRuntime.readBalance(walletRecord).then((b) => b.sats).catch(() => 0n));
             if (arkBal > 0n) {
               crossRail = true;
-              fundedFrom = "arkade";
+              fundedFrom = btcFundedFrom;
             }
           }
         } else if (!quoteIsTempo && arkadeRuntime) {
@@ -630,7 +631,7 @@ export function createPrfHttp402Payer({
             (await arkadeRuntime.readBalance(walletRecord).then((b) => b.sats).catch(() => 0n));
           if (arkBal > 0n) {
             crossRail = true;
-            fundedFrom = "arkade";
+            fundedFrom = btcFundedFrom;
           }
         }
       }
@@ -641,7 +642,7 @@ export function createPrfHttp402Payer({
         dry_run: true,
         protocol: selected.kind,
         rail: "usdc",
-        ...(crossRail ? { cross_rail: true, funded_from: fundedFrom || "arkade" } : {}),
+        ...(crossRail ? { cross_rail: true, funded_from: fundedFrom || btcFundedFrom } : {}),
         amount_units: quoteAmountUnits,
         over_cap: overCap,
         quote: q,
@@ -838,12 +839,13 @@ export function createPrfHttp402Payer({
           receipt = null;
         }
       }
+      const btcFundedFrom = arkadeRuntime?.custodyMode === "l1_0conf" ? "l1_0conf" : "arkade";
       return {
         status: second.status >= 200 && second.status < 300 ? "done" : "failed",
         paid: true,
         protocol: "x402",
         rail: "usdc",
-        ...(bridged ? { funded_from: "arkade", bridged } : {}),
+        ...(bridged ? { funded_from: btcFundedFrom, bridged } : {}),
         http_status: second.status,
         amount_units: selected.offer.amount,
         asset: BASE_USDC_ADDRESS,
@@ -982,12 +984,13 @@ export function createPrfHttp402Payer({
 
     const { response: second, receipt, hopTxHash, rawRes: secondRaw, offer: finalOffer } = attempt;
 
+    const btcFundedFrom = arkadeRuntime?.custodyMode === "l1_0conf" ? "l1_0conf" : "arkade";
     return {
       status: second.status >= 200 && second.status < 300 ? "done" : "failed",
       paid: true,
       protocol: "mpp",
       rail: "usdc",
-      ...(bridged ? { funded_from: bridged.from || "arkade", bridged } : {}),
+      ...(bridged ? { funded_from: bridged.from || btcFundedFrom, bridged } : {}),
       http_status: second.status,
       amount_units: finalOffer.amount,
       asset: finalOffer.asset,
