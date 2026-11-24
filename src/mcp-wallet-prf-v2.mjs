@@ -1,6 +1,6 @@
 // v2 Nuri Passkey PRF + Dual-Rail (2-of-4 Base Safe USDC + 2-of-2 Arkade/Lightning)
 // coordinator for the 4-action MCP `wallet` tool (`balance`, `receive`, `pay`, `history`).
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { encodeFunctionData, getAddress, parseAbi } from "viem";
 import { isValidArkAddress } from "@arkade-os/sdk";
 import { createAgentArkadeRuntime } from "./agent-arkade-v2.mjs";
@@ -875,6 +875,38 @@ export function createPrfWalletCoordinator({
     }
   }
 
+  const DEFAULT_LNURL_CONSONANTS = "bcdfghjklmnprstvwz";
+  const DEFAULT_LNURL_VOWELS = "aeiou";
+
+  function derivePronounceableHandle(walletId, attempt = 0) {
+    const digest = createHash("sha256")
+      .update(`nuriwallet-default-lnurl-v1:${walletId}:${attempt}`)
+      .digest();
+    let base = "";
+    for (let i = 0; i < 3; i += 1) {
+      base += DEFAULT_LNURL_CONSONANTS[digest[i * 2] % DEFAULT_LNURL_CONSONANTS.length];
+      base += DEFAULT_LNURL_VOWELS[digest[i * 2 + 1] % DEFAULT_LNURL_VOWELS.length];
+    }
+    return attempt === 0 ? base : `${base}${digest[6] % 100}`;
+  }
+
+  function ensureWalletLnurlHandles(db, walletRecord) {
+    const existing = db.listLnurlHandlesByWallet(walletRecord.walletId);
+    if (existing.length > 0) return existing;
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const candidate = derivePronounceableHandle(walletRecord.walletId, attempt);
+      try {
+        return [db.registerLnurlHandle({ username: candidate, walletId: walletRecord.walletId })];
+      } catch (err) {
+        if (err?.code === "username_taken" || /username_taken/.test(String(err?.message))) {
+          continue;
+        }
+        return [];
+      }
+    }
+    return [];
+  }
+
   async function readDualBalances(walletRecord, secrets = null) {
     if (secrets?.agentBtcPrivHex) {
       await sweepPendingReceives(walletRecord, secrets.agentBtcPrivHex);
@@ -911,8 +943,9 @@ export function createPrfWalletCoordinator({
       walletRecord.arkadeAddress = arkadeState.address;
     }
 
-    const lnurlHandles = ensureStore().listLnurlHandlesByWallet(walletRecord.walletId);
+    const lnurlHandles = ensureWalletLnurlHandles(ensureStore(), walletRecord);
     const lnurlAddresses = lnurlHandles.map((h) => `${h.username}@nuriwallet.com`);
+    const primaryLnurl = lnurlAddresses.length ? lnurlAddresses[lnurlAddresses.length - 1] : null;
 
     return {
       available: unitsToDecimal(String(usdcUnits), 6),
@@ -936,9 +969,9 @@ export function createPrfWalletCoordinator({
         : arkadeState.address
           ? { arkade_address: arkadeState.address }
           : {}),
-      ...(lnurlAddresses.length
+      ...(primaryLnurl
         ? {
-            lnurl: lnurlAddresses[0],
+            lnurl: primaryLnurl,
             ...(lnurlAddresses.length > 1 ? { lnurl_addresses: lnurlAddresses } : {}),
           }
         : {}),
@@ -1334,8 +1367,9 @@ export function createPrfWalletCoordinator({
       };
     }
 
-    const walletLnurls = db.listLnurlHandlesByWallet(wallet.walletId).map((h) => `${h.username}@nuriwallet.com`);
-    const lnurlField = walletLnurls.length ? { lnurl: walletLnurls[0] } : {};
+    const walletLnurls = ensureWalletLnurlHandles(db, wallet).map((h) => `${h.username}@nuriwallet.com`);
+    const primaryWalletLnurl = walletLnurls.length ? walletLnurls[walletLnurls.length - 1] : null;
+    const lnurlField = primaryWalletLnurl ? { lnurl: primaryWalletLnurl } : {};
 
     if (requestedRail === "arkade" || requestedRail === "btc") {
       const ark = await ensureArkade().readBalance(wallet);
@@ -1349,7 +1383,7 @@ export function createPrfWalletCoordinator({
           ...lnurlField,
           sats: Number(ark.sats),
           btc: formatSatsAsBtc(ark.sats),
-          next: `Send on-chain Bitcoin (L1) to ${ark.btcAddress || ark.address}${walletLnurls.length ? ` or Lightning to ${walletLnurls[0]}` : ""}, then call wallet balance.`,
+          next: `Send on-chain Bitcoin (L1) to ${ark.btcAddress || ark.address}${primaryWalletLnurl ? ` or Lightning to ${primaryWalletLnurl}` : ""}, then call wallet balance.`,
         };
       }
       if (ark.address && ark.address !== wallet.arkadeAddress) {
@@ -1363,7 +1397,7 @@ export function createPrfWalletCoordinator({
         ...lnurlField,
         sats: Number(ark.sats),
         btc: formatSatsAsBtc(ark.sats),
-        next: `Send Arkade sats to ${ark.address}${walletLnurls.length ? ` or Lightning to ${walletLnurls[0]}` : ""}, then call wallet balance.`,
+        next: `Send Arkade sats to ${ark.address}${primaryWalletLnurl ? ` or Lightning to ${primaryWalletLnurl}` : ""}, then call wallet balance.`,
       };
     }
 

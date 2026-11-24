@@ -5,6 +5,10 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — Auto-assign default `username@nuriwallet.com` LNURL to every wallet (2026-11-24)
+
+- Automatically provision a deterministic 6-letter pronounceable `<handle>@nuriwallet.com` LNURL Lightning Address (`ensureWalletLnurlHandles`) for every PRF wallet on first `balance` / `receive` if none is registered yet, while prioritizing any later custom `lnurl_username` as primary `lnurl` (`src/mcp-wallet-prf-v2.mjs`).
+
 ## Unreleased — Keep `/skill.md` & `/llms.txt` setup simple and browser-Passkey-first (2026-11-24)
 
 - Keep `## Setup` in `/skill.md` and `/llms.txt` (`src/service-index.mjs`) strictly simple and browser-Passkey-first so normal AI agents are never confused by hardware-wallet steps; move optional `nuricard connect` note to a 1-line Companion Services footnote (only if the user explicitly uses `nuricard`), while keeping `lnurl_username` (`username@nuriwallet.com`) documented under `balance` / `receive`.
