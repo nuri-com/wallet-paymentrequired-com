@@ -32,7 +32,7 @@ All v1 code remains intact and active for existing bearer keys:
 1. **Third-Party SaaS Custody Dependency**: Relied on Privy's hosted API (`@privy-io/node` + `@privy-io/react-auth`) and ZeroDev SDK for wallet creation and signing quorum.
 2. **EVM-Only**: Could not hold Bitcoin VTXOs or pay/receive Lightning (`BOLT11`, `L402`, Lightning `MPP`, `LNURL-pay`).
 3. **Separate Identity Silo**: Users who already owned a Nuri Passkey (`connect.nuri.com`) had to go through a separate Privy flow instead of deriving an isolated agent sub-wallet directly from their Nuri Passkey hardware PRF.
-4. **9-Action Surface**: Exposed 9 overlapping actions (`balance`, `fund`, `pay`, `ask`, `send`, `history`, `bridge`, `discover`), increasing tool-selection cognitive load for smaller LLMs.
+4. **8-Action Legacy Surface (Since Collapsed to 4)**: Previously exposed 8 overlapping actions (`balance`, `fund`, `pay`, `ask`, `send`, `history`, `bridge`, `discover`), increasing tool-selection cognitive load for smaller LLMs.
 
 ---
 
@@ -51,13 +51,13 @@ flowchart TB
   subgraph ToolServer["46.225.135.119"]
     W["wallet.paymentrequired.com (:8798)<br/>Holds Agent Child Keys encrypted under<br/>HKDF(AGENT_KERNEL_ENCRYPTION_KEY, npw1_...)"]
     CS["nuri-agent-cosigner (:8794)<br/>Independent Policy Enforcer<br/>Holds Cosigner EVM + BTC Shares"]
-    DRV -- "XChaCha20-Poly1305 encrypted grant<br/>+ Main EOA ownership signature" --> W
-    W -- "Loopback Bearer RPC<br/>/v1/grants/register, /v1/evm/*, /v1/arkade/*" --> CS
+    DRV -- "secp256k1 ECDH + XChaCha20-Poly1305 encrypted grant<br/>+ Main EOA EIP-191 ownership signature" --> W
+    W -- "Loopback Bearer RPC<br/>/v1/agent/grants/*, /v1/evm/*, /v1/arkade/*, /v1/l1/*" --> CS
   end
 
   subgraph Rails["Dual Non-Custodial Rails"]
-    SAFE["Base 2-of-4 Safe v1.4.1<br/>Owners: [Main EOA, Passkey P-256,<br/>Agent EOA, Cosigner EOA]<br/>x402 + EVM MPP + Direct USDC"]
-    ARK["Arkade 2-of-2 MuSig2 + Decay<br/>Leaf 0: MuSig2(Agent,Cosigner)+ArkOp<br/>Leaf 1: CSV(exit)+MuSig2(Agent,Cosigner)<br/>Leaf 2: CSV(exit+14d)+Agent alone<br/>L402 + Lightning MPP + BOLT11 + LNURL + ark1"]
+    SAFE["Base 2-of-4 Safe v1.5.0<br/>Owners: [Main EOA, Passkey P-256,<br/>Agent EOA, Cosigner EOA]<br/>x402 + EVM MPP + Direct USDC"]
+    ARK["Arkade 2-of-2 MuSig2 + Decay<br/>Leaf 0: MuSig2(Agent,Cosigner)+ArkOp<br/>Leaf 1: CSV(exit)+MuSig2(Agent,Cosigner)<br/>Leaf 2: CSV(exit+~90d default)+Agent alone<br/>L402 + Lightning MPP + BOLT11 + LNURL + ark1"]
   end
 
   W --> SAFE
@@ -74,19 +74,19 @@ flowchart TB
 | Onboarding ceremony | `/bridge/privy` (`@privy-io/react-auth`) | `connect.nuri.com` (`operation: "agent_grant"`) |
 | Main wallet root exposure | Separate Privy root | **Zero** — domain-separated `'nuri-agent-wallet-v1'` derived inside browser RAM |
 | Random session keys? | Yes (sealed in key boxes) | **Never** — 100% deterministic from Passkey PRF + `slot_index` |
-| EVM account | ZeroDev Kernel / Privy 2-of-2 Safe | Canonical **Safe v1.4.1 L2 (2-of-4)** predicted offline via `CREATE2` |
-| EVM recovery if server & cosigner vanish | Requires Privy enclave | User signs `2-of-4` directly with `[Main EOA + Passkey Daimo P-256 Signer]` |
-| Bitcoin / Lightning custody | None | **Arkade 2-of-2 MuSig2** (`NuriAgentVtxoScript`) + trustless Arkade Intents VHTLCs |
-| BTC recovery if cosigner vanishes | N/A | **Leaf 2 Server-Decay**: after `exitTimelock + 14 days`, user re-derives `agentClientKey` from Passkey PRF and sweeps unilaterally on Bitcoin L1 |
+| EVM account | ZeroDev Kernel / Privy 2-of-2 Safe | Canonical **Safe v1.5.0 L2 (2-of-4)** predicted offline via `CREATE2` |
+| EVM recovery if server & cosigner vanish | Requires Privy enclave | User signs `2-of-4` directly with `[Main EOA + Passkey P-256 Signer]` |
+| Bitcoin / Lightning custody | None | **Arkade 2-of-2 MuSig2** (`NuriAgentVtxoScript`) + Intents VHTLCs, or optional **Pure-L1 2-of-2 MuSig2+CSV + Server Arkade Fronter** (`AGENT_BTC_CUSTODY_MODE=l1_0conf`) |
+| BTC recovery if cosigner vanishes | N/A | **Leaf 2 Server-Decay**: after `unilateralExitDelay + 7,776,256s` (~90 days default, configurable via `ARKADE_DECAY_OFFSET_SECONDS`; or `nuriServerCsv` on Pure-L1), user re-derives `agentClientKey` from Passkey PRF and sweeps unilaterally on Bitcoin L1 |
 | Lightning swap engine | None | `@arkade-os/swap` RFQ/VHTLC over Nostr (`wss://nostr.arkade.sh`) — **zero Boltz** |
 
 ### 2.2 Policy Co-Signing Without Custodial Lock-In
-`nuri-agent-cosigner` (`127.0.0.1:8794`) holds deterministic per-grant cosigner keys derived via HKDF from its 32-byte master seed and `(cred_id_b64u, slot_index)`:
-1. **Normal agent operation**: `wallet.paymentrequired.com` signs with the Agent child key and requests a policy-checked co-signature from `nuri-agent-cosigner` (`Agent + Cosigner = 2-of-4` on Base Safe; `MuSig2(Agent, Cosigner)` on Arkade).
-2. **Independent policy enforcement**: `nuri-agent-cosigner` decodes Safe transactions, EIP-3009 / Permit2 typed data, and Arkade PSBTs + VHTLC scripts independently, enforcing per-tx and daily USDC/sats caps before co-signing.
+`nuri-agent-cosigner` (`127.0.0.1:8794`) holds deterministic per-grant cosigner keys derived via **HMAC-SHA512** from two separate 32-byte root seeds (`AGENT_EVM_COSIGNER_SEED_HEX` bound to `(cred_id_b64u, slot_index)`, and `AGENT_BTC_COSIGNER_SEED_HEX` bound to `(cred_id_b64u, slot_index, agent_btc_pk33)`):
+1. **Normal agent operation**: `wallet.paymentrequired.com` signs with the Agent child key and requests a policy-checked co-signature from `nuri-agent-cosigner` (`Agent + Cosigner = 2-of-4` on Base Safe; `MuSig2(Agent, Cosigner)` on Arkade or Pure-L1).
+2. **Independent policy enforcement**: `nuri-agent-cosigner` decodes Safe transactions, EIP-3009 / Permit2 / BurnIntent typed data, and Arkade / L1 PSBTs + VHTLC scripts independently, enforcing per-tx and daily USDC/sats caps before co-signing.
 3. **Zero lock-in**:
    - On **Base**, the user owns 2 of the 4 Safe owners (`Main EOA` + `Passkey P-256 Signer`) and can execute any Safe transaction, revoke `Agent EOA` / `Cosigner EOA`, or sweep all USDC without `wallet.paymentrequired.com` or `nuri-agent-cosigner`.
-   - On **Bitcoin / Arkade**, every VTXO commits to a 3-leaf Taproot tree whose 3rd leaf drops the cosigner key after `unilateralExitDelay + 1,209,600s` (14 days), letting the user recover 100% of sats from their Passkey PRF alone.
+   - On **Bitcoin / Arkade**, every VTXO commits to a 3-leaf Taproot tree whose 3rd leaf drops the cosigner key after `unilateralExitDelay + 7,776,256s` (~90 days default via `ARKADE_DECAY_OFFSET_SECONDS`; or `nuriServerCsv` on Pure-L1), letting the user recover 100% of sats from their Passkey PRF alone.
 
 ---
 

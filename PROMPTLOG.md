@@ -1,5 +1,12 @@
 # Prompt log
 
+## 2026-11-25 — Emin; recorded by Antigravity
+
+- **"can you not do all the cosigner work in rust ... test it end to end with the rust version ... go through the docs and dont hallucinate some wrong things inside - run parallel background agents for that"**
+  - Migrated `nuri-agent-cosigner` (`Dockerfile`, `.dockerignore`, `rust/src/*`) to **100% Rust** across all 18 HTTP routes (`evm_derive.rs`, `evm_cosigner.rs`, `arkade_cosigner.rs`, `l1_cosigner.rs`, `esplora.rs`, `policy_store.rs`, `server.rs`), verified via `cargo test --all-targets`, cross-language `test/rust-parity.test.mjs`, and Bitcoin Core v31.1.0 regtest, and deployed live (`nuri-agent-cosigner@10e9717`, `GET /healthz` `"runtime": "rust"` on `46.225.135.119:8794`).
+  - Executed a live **4-hop mainnet E2E** against `nuriwallet.com` backed by the deployed Rust cosigner: Hop 1 `l1_0conf` `1,200` sats (`4b016391...`), Hop 2 `l1_0conf_settle` `1,150` sats (`4c628936...`), Hop 3 `lend` `450` sats (`461` debt), Hop 4 `l1_0conf_collect` `1,000` sats (`cf4b6bb7...`, debt -> `0`), plus `1,442`-sat sweep (`391e1917...`, `0` sats left in scratch). Live `/v1/fronter/status`: `totalFloatSats: 34,755`, `netFloatEquitySats: 34,755`, `earnedServiceFeeSats: 1,341` (`23` out / `18` in).
+  - Audited every markdown file across all 3 repos using 3 parallel research subagents against actual code: scrubbed every false `Boltz` claim (`nuri-0conf-bitcoin-lightning-fronter/README.md`, `CHANGELOG.md`, `nuri-agent-cosigner/README.md` — pool uses `@arkade-os/swap` Nostr RFQ with zero Boltz), fixed `AGENT-DERIVATION-SPEC.md` crypto formulas (`AGENT_WALLET_SALT`, secp256k1 ECDH, HMAC-SHA512 cosigner seeds, Safe `v1.5.0` addresses, `~90d` / `7,776,256s` Arkade decay default, `readLockupFate`, `LN_CLAIM_SALT`, actual fixture path/keys), dust thresholds (`P2TR/P2WSH >= 330`, `P2WPKH >= 294`, `P2SH >= 540`, `P2PKH >= 546`), SQLite table names, and runtime/SHA references.
+
 ## 2026-11-24 — Emin; recorded by Antigravity
 
 - **"test it through, with real money, real signing etc. ... just document it well on all repos with links"**

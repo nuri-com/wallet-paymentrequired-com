@@ -57,7 +57,7 @@ Byte-for-byte address derivation was verified against live mainnet `@lennard` (`
 |---|---|---|
 | `AGENT_BTC_CUSTODY_MODE` | `arkade` | Set `l1_0conf` to switch PRF BTC/LN wallets to Pure-L1 + server Arkade fronter |
 | `FRONTER_ARKADE_PRIVKEY_HEX` | unset | 32-byte hex private key for the single server Arkade liquidity pool |
-| `FRONTER_L1_PRIVKEY_HEX` | unset | 32-byte hex private key for the server L1 hot wallet (instant LN → L1 payouts) |
+| `FRONTER_L1_PRIVKEY_HEX` | falls back to `FRONTER_ARKADE_PRIVKEY_HEX` | 32-byte hex private key for the server L1 hot wallet (instant LN → L1 payouts) |
 | `FRONTER_L1_DEPOSIT_ADDRESS` | derived from `FRONTER_L1_PRIVKEY_HEX` | Optional explicit L1 address receiving user replenishment txs |
 | `FRONTER_BITCOIN_NETWORK` | synced from cosigner (`bitcoin`) | Bitcoin network (`bitcoin`, `testnet`, `signet`, `regtest`) |
 | `FRONTER_ESPLORA_URL` | `https://mempool.space/api` | Esplora API for UTXOs, fee estimates, and raw tx broadcast |
@@ -68,26 +68,27 @@ Byte-for-byte address derivation was verified against live mainnet `@lennard` (`
 | `FRONTER_RECEIVE_FEE_BPS` | `0` | Basis-point service fee deducted on incoming Lightning payouts/credits (e.g. `200` = `2%`) |
 
 ### Health, Public Monitor & Loopback Inspection
-- `GET /healthz` exposes `btc_custody_mode`, `l1_0conf_fronter_supported: true`, and `l1_pool_configured` (`true` once `FRONTER_ARKADE_PRIVKEY_HEX` and `FRONTER_L1_PRIVKEY_HEX` / `FRONTER_L1_DEPOSIT_ADDRESS` are configured).
+- `GET /healthz` exposes `btc_custody_mode`, `l1_0conf_fronter_supported: true`, and `l1_pool_configured` (`true` once `FRONTER_ARKADE_PRIVKEY_HEX` is set; `FRONTER_L1_PRIVKEY_HEX` / `FRONTER_L1_DEPOSIT_ADDRESS` default to `FRONTER_ARKADE_PRIVKEY_HEX` when omitted).
 - `GET /v1/fronter/status` exposes a 15s-cached public read-only view of `arkadeAddress`, `l1DepositAddress`, `arkadeBalanceSats`, `l1HotBalanceSats`, `totalFloatSats`, `netFloatEquitySats`, `feesConfig`, and `ledgerTotals` (`earnedServiceFeeSats`, `completedOutSwaps`, `completedInSwaps`, `totalDebtSats`, `totalPendingReceiveSats`).
 - Loopback `POST /rpc/tool` (`Bearer $SERVICE_RPC_SECRET`) supports `l1_pool_status` (`helper` tool) for live uncached pool inspection.
 
-## Live Mainnet Proof (`nuriwallet.com`, 2026-11-24)
+## Live Mainnet Proof (`nuriwallet.com`, 2026-11-24 / 2026-11-25)
 
-- **Swaps proven live:** **36 mainnet swaps** (`19` out / `17` in) across `smartcard@nuriwallet.com` (`bc1pu3r4uuyg7khlc8kcxnkumcf8t7san9rxd476pf4q6tsjkvgw7uyq68z0ur`), `emino@nuri.com`, and an automated scratch Arkade counterpart:
+- **Swaps proven live:** **41 mainnet swaps** (`23` out / `18` in) across `smartcard@nuriwallet.com` (`bc1pu3r4uuyg7khlc8kcxnkumcf8t7san9rxd476pf4q6tsjkvgw7uyq68z0ur`), `emino@nuri.com`, and automated scratch Arkade counterparts:
   - Early user L1 txs confirmed in blocks `977380` (`f4d19c1f...`), `977385` ([`e32a6b14...`](https://mempool.space/tx/e32a6b14ed869ab60e06324392ec9820b136ac6cc8b94ce4b89f50b6d6d579ce)), `977403` ([`70761931...`](https://mempool.space/tx/707619313325e9aa627a358c6df99dfbff1cf2166c91488719f7840441dcbc8b)), and **`977404`** ([`ad0f15dc...`](https://mempool.space/tx/ad0f15dc8b8cc4cd02c02b88c954ce86fb6e02c15760052ff4261c8e6069d509) + [`bf79ee2a...`](https://mempool.space/tx/bf79ee2a75b22874c597e43baba358b1d868421812ab8dacd52a9cdcddfcb058)).
   - Subsequent `stress20k` 12-hop matrix (`360 → 9,500` sats, `14–25s`/hop, 0 errors) exercised every path cleanly: `l1_0conf` (`b611fd77...`, `aea38e7c...`, multi-in `c006b7d3...`), `lend` (`420`, `450`), `full_debt` (`357`), `l1_0conf_collect` (`cf783851...`), `l1_0conf_settle` (`9ef22e8b...`, `2d064950...`), `partial_debt_l1_settle` (`0af53613...`), and `micro_credit` (`497` in / `400` out), followed by `11,486`-sat scratch sweep (`83db35ff...`, `0` fee) back to Pool Arkade.
-  - Standalone **Rust** cosigner (`nuri-l1-cosigner`, `nuri-0conf-bitcoin-lightning-fronter/rust/`) verified end-to-end against real Bitcoin Core v31.1.0 regtest consensus (key-path `28839323...` + unilateral CSV reject at age `4` / mine at age `5` `2dd6959b...`) and live mainnet signing (`3,000` sats from `smartcard@nuriwallet.com` `eb95ec57...:0` → Hop 1 `2a8acc3a...` → Hop 2 immediate `0-conf` sweep `a3de1913...` back to Pool L1 hot).
-- **Live `/v1/fronter/status` totals:** `totalFloatSats: 33,314` (`l1HotBalanceSats: 15,116` + `arkadeBalanceSats: 18,198`), `totalPendingReceiveSats: 77`, `totalDebtSats: 0`, **`netFloatEquitySats: 33,237`**, **`earnedServiceFeeSats: 1,265`** (**`+1,030` sats total net profit** vs `29,741` sats injected).
+  - **Live 4-hop E2E against deployed 100% Rust `nuri-agent-cosigner` (`10e9717` on `46.225.135.119:8794`, `"runtime": "rust"`):** Hop 1 `l1_0conf` `1,200` sats ([`4b016391...`](https://mempool.space/tx/4b016391b923da7b5c93b76b50bdbcb75072fe2e60a707ba71fa02d500dd0b84)), Hop 2 `l1_0conf_settle` `1,150` sats (`4c628936...`), Hop 3 `lend` `450` sats (`461` debt), Hop 4 `l1_0conf_collect` `1,000` sats ([`cf4b6bb7...`](https://mempool.space/tx/cf4b6bb72810514378d6c73fc3b82bfa8b4d959be6d49a1a3203d4b0d1290d55), debt -> `0`), plus `1,442`-sat Arkade sweep (`391e1917...`, `0` sats left in scratch).
+  - Upstream Rust L1 prototype (`nuri-0conf-bitcoin-lightning-fronter/rust/`) also verified on real Bitcoin Core v31.1.0 regtest (`28839323...` / `2dd6959b...`) and mainnet (`eb95ec57...:0` → `2a8acc3a...` → `a3de1913...`).
+- **Live `/v1/fronter/status` totals:** `totalFloatSats: 34,755` (`l1HotBalanceSats: 16,631` + `arkadeBalanceSats: 18,124`), `totalPendingReceiveSats: 0`, `totalDebtSats: 0`, **`netFloatEquitySats: 34,755`**, **`earnedServiceFeeSats: 1,341`**.
 
 ## Related Repositories & Future Hardening
 
-- Standalone Rust cosigner (`nuri-l1-cosigner`) & comparative Muun architecture analysis: [`nuri-com/nuri-0conf-bitcoin-lightning-fronter`](https://github.com/nuri-com/nuri-0conf-bitcoin-lightning-fronter) and [`MUUN-VS-NURI-ARCHITECTURE-AND-RUNTIME-HARDENING.md`](https://github.com/nuri-com/nuri-0conf-bitcoin-lightning-fronter/blob/main/docs/MUUN-VS-NURI-ARCHITECTURE-AND-RUNTIME-HARDENING.md).
-- Live 2-of-2 anti-RBF cosigner spec & source: [`nuri-com/nuri-agent-cosigner`](https://github.com/nuri-com/nuri-agent-cosigner) ([`docs/ARCHITECTURE.md`](https://github.com/nuri-com/nuri-agent-cosigner/blob/main/docs/ARCHITECTURE.md)).
+- Standalone Rust L1 prototype & comparative Muun architecture analysis: [`nuri-com/nuri-0conf-bitcoin-lightning-fronter`](https://github.com/nuri-com/nuri-0conf-bitcoin-lightning-fronter) and [`MUUN-VS-NURI-ARCHITECTURE-AND-RUNTIME-HARDENING.md`](https://github.com/nuri-com/nuri-0conf-bitcoin-lightning-fronter/blob/main/docs/MUUN-VS-NURI-ARCHITECTURE-AND-RUNTIME-HARDENING.md).
+- Live **100% Rust** 2-of-2 anti-RBF cosigner spec & source: [`nuri-com/nuri-agent-cosigner`](https://github.com/nuri-com/nuri-agent-cosigner) ([`docs/ARCHITECTURE.md`](https://github.com/nuri-com/nuri-agent-cosigner/blob/main/docs/ARCHITECTURE.md)).
 
 1. **Deferred L1 Auto-Sweep (Shipped) + Pool Rebalancer:** `sweepAllDeferredL1Credits` automatically sweeps queued `pending_receive_sats >= l1SettleFloorSats` to `bc1p...` inside `startLnurlAutoClaim` once Pool L1 (`bc1pge7p...`) has liquidity; next step adds an automatic Arkade collaborative offboard → Pool L1 trigger whenever L1 drops below threshold.
 2. **`LEND` / `micro_credit` VHTLC Timeout Sweeper (Shipped):** `paying_ln` timeouts now persist `arkTxid` / `swapPkScriptHex` and `reconcilePendingBroadcasts` auto-refunds user debt on `returned`/`exited` VHTLCs or finalizes late preimages.
 3. **Nostr Multi-Relay Retry (Shipped `withRfq` 3x) + Overflow Routing (Parked):** SwapKit / BitcoinVN overflow routing remains parked for zero extra complexity until real whale sends demand it.
 4. **CPFP / Fee-Bumping on `sendL1Payout`:** Mutual CPFP bump support when mempool fees spike mid-confirmation.
-5. **Rust Cosigner & Vault Migration (`>$1k–$5k` TVL):** Rewrite `nuri-agent-cosigner` in Rust (`musig2` compile-time nonce safety + `zeroize`) first, then extract pool signing keys into a Rust daemon leaving Node.js as a keyless edge.
+5. **Rust Cosigner (`Phase 1` Shipped `10e9717`) & Vault Migration (`Phase 2` `>$5k` TVL):** `nuri-agent-cosigner` now runs 100% Rust in production (`"runtime": "rust"`); Phase 2 extracts pool signing keys into a Rust daemon leaving Node.js as a keyless edge.
 6. **Cooperative L1-Out Fee Output:** Add an optional basis-point fee output (`>= 330` sats P2TR dust floor) to `sendOnchainBtc` co-signed L1 sends while keeping the unilateral Tapscript CSV exit 100% sovereign and fee-free.

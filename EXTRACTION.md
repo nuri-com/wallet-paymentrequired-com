@@ -29,8 +29,8 @@ links follow their payment to banking, and this service refuses them (ARCHITECTU
 
 | Item | Monolith `SERVICE_MODE=wallet` | This repository |
 |---|---|---|
-| `GET /api/browser-sessions/<id>/approval?state=` (the approval page's read, `src/privy-bridge-client.mjs:51-58`) | 500 `Cannot read properties of null (reading 'approvalPayload')`: `mcpWalletPay` is null on the wallet role (source `src/server.mjs:166,499`) | 200 bridge payload via `readApprovalPayload` (`src/wallet-server.mjs:223-232`), the same function the pay module delegates to for non-pay rows (source `src/mcp-wallet-pay.mjs:1597-1599`) |
-| loopback `/mcp` `tools/list` | wallet, account, bank (account and bank as remote peers, source `src/server.mjs:202,212-214`) | wallet only. The public catalog is served by the legacy facade at `https://paymentrequired.com/mcp`. The wallet's `/mcp` is not published (`deploy` edge publishes browser routes only) |
+| `GET /api/browser-sessions/<id>/approval?state=` (the approval page's read, `src/privy-bridge-client.mjs:51-58`) | 500 `Cannot read properties of null (reading 'approvalPayload')`: `mcpWalletPay` is null on the wallet role (source `src/server.mjs:166,499`) | 200 bridge payload via `readApprovalPayload` (`src/wallet-server.mjs:333-341`), the same function the pay module delegates to for non-pay rows (source `src/mcp-wallet-pay.mjs:1597-1599`) |
+| loopback `/mcp` `tools/list` | wallet, account, bank (account and bank as remote peers, source `src/server.mjs:202,212-214`) | wallet only *(historical extraction snapshot: `POST /mcp`, `/v1/*`, `/v1/fronter/status`, `/llms.txt`, and `/.well-known/lnurlp/*` were subsequently published across `WALLET_HOSTS`; see `README.md` "Surface")* |
 
 ## Excluded (reason)
 

@@ -5,6 +5,11 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — Doc accuracy scrub & live 4-hop mainnet E2E against 100% Rust cosigner (2026-11-25)
+
+- Audit and fix stale specs/paths/line references across `README.md`, `ARCHITECTURE.md`, `DEPLOY.md`, `EXTRACTION.md`, `docs/CUSTODY-EVOLUTION.md`, `docs/AGENT-DERIVATION-SPEC.md` (exact `AGENT_WALLET_SALT` HKDF derivation, `secp256k1` grant ECDH, `HMAC-SHA512` dual-seed cosigner shares, `Safe v1.5.0 L2` addresses, `~90d` / `7,776,256s` Arkade decay default, `readLockupFate`, `LN_CLAIM_SALT`, and actual `test/fixtures/agent-grant-vector.json` fixture), and `docs/L1-0CONF-ARKADE-FRONTER.md`.
+- Verify live 4-hop mainnet E2E on `nuriwallet.com` against deployed **100% Rust** `nuri-agent-cosigner` (`10e9717`, `"runtime": "rust"` on `46.225.135.119:8794`): `l1_0conf` (`4b016391...`, `1,200` sats), `l1_0conf_settle` (`4c628936...`, `1,150` sats), `lend` (`450` sats, `461` debt), `l1_0conf_collect` (`cf4b6bb7...`, `1,000` sats, debt -> `0`), and `1,442`-sat sweep (`391e1917...`, `0` sats left in scratch). Live `/v1/fronter/status`: `totalFloatSats: 34,755` (`16,631` L1 + `18,124` Arkade), `netFloatEquitySats: 34,755`, `earnedServiceFeeSats: 1,341` (`23` out / `18` in).
+
 ## Unreleased — Cross-links & live Rust mainnet proof sync (2026-11-24)
 
 - Update `README.md`, `docs/L1-0CONF-ARKADE-FRONTER.md`, and `PROMPTLOG.md` with cross-links across `wallet-paymentrequired-com`, `nuri-agent-cosigner/docs/ARCHITECTURE.md`, and `nuri-0conf-bitcoin-lightning-fronter`, plus the verified Bitcoin Core v31.1.0 regtest consensus and real-money mainnet Rust signing proof (`eb95ec57...` → `2a8acc3a...` → `a3de1913...`, `/v1/fronter/status` `totalFloatSats: 33,314`, `netFloatEquitySats: 33,237`).

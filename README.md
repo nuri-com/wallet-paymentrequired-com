@@ -1,16 +1,16 @@
 # paymentrequired wallet service
 
-The wallet service of paymentrequired.com, served at `wallet.paymentrequired.com`. It runs the
-4-action dual-rail `wallet` MCP tool (`src/mcp-wallet-tool.mjs` + `src/mcp-wallet-prf-v2.mjs`):
+The wallet service of paymentrequired.com, served across `agent.nuri.com`, `wallet.nuri.com`, `nuriwallet.com`, and `wallet.paymentrequired.com` (`WALLET_HOSTS` in `src/service-index.mjs:6-11`). It runs the
+4-action multi-rail `wallet` MCP tool (`src/mcp-wallet-tool.mjs` + `src/mcp-wallet-prf-v2.mjs`):
 **`balance`**, **`receive`**, **`pay`**, and **`history`** across **Base USDC** (`x402`, EVM `MPP`,
-direct `0x` transfers, plus auto-bridged **Tempo `4217` MPP** via Relay from Base USDC or Arkade)
-and **Bitcoin Lightning / Arkade** (`L402`, Lightning `MPP`, `BOLT11`,
-Lightning Address `LNURL-pay`, and native `ark1` VTXOs via Arkade Intents — zero Boltz).
+direct `0x` transfers, plus auto-bridged **Tempo `4217` MPP** via Relay from Base USDC or Arkade),
+**Solana USDC** (`x402`), and **Bitcoin Lightning / Arkade** (`L402`, Lightning `MPP`, `BOLT11`,
+Lightning Address `LNURL-pay`, native `ark1` VTXOs, and L1 `bc1p...` via Arkade Intents — zero Boltz).
 
 New wallets onboard with a single vendor-independent **Nuri Passkey PRF** tap on `connect.nuri.com`
 (`operation: "agent_grant"`, bearer token `npw1_<43-char-base64url>`), deriving domain-separated
-Agent EVM + Bitcoin child keys (`nuri-agent-wallet-v1`) co-signed by `nuri-agent-cosigner`
-(`127.0.0.1:8794`) over a **2-of-4 Base Safe v1.4.1** and either a **2-of-2 MuSig2 + server-decay
+Agent EVM + Bitcoin child keys (`nuri-agent-wallet-v1`) co-signed by the **100% Rust** `nuri-agent-cosigner`
+(`127.0.0.1:8794`) over a **2-of-4 Base Safe v1.5.0 L2** and either a **2-of-2 MuSig2 + server-decay
 Arkade VTXO script** (default) or **Pure-L1 2-of-2 MuSig2+CSV + Server-Only Arkade 0-Conf Fronter**
 (`AGENT_BTC_CUSTODY_MODE=l1_0conf`, `src/agent-l1-fronter-v2.mjs` — Muun-style `LEND`/`COLLECT`/`FulfillFullDebt`,
 hold-broadcast anti-RBF, instant 0-conf L1↔LN settlement, and direct native L1 `bc1...` sends). All existing v1 Privy/ZeroDev wallets (`44`-char and `66`-char `wallet_key`)
@@ -24,8 +24,8 @@ payments belong to the banking service.
 flowchart LR
   AG[agent] -- wallet.paymentrequired.com/mcp --> W[wallet :8798]
   W -- agent_grant E2EE --> CN[connect.nuri.com]
-  W -- loopback co-sign --> CS[nuri-agent-cosigner :8794]
-  W -- Base Safe v1.4.1 --> BASE[Base USDC x402 / MPP]
+  W -- loopback co-sign (Rust) --> CS[nuri-agent-cosigner :8794]
+  W -- Base Safe v1.5.0 --> BASE[Base USDC x402 / MPP]
   W -- Arkade + Intents RFQ --> ARK[arkade.computer / Lightning]
   A[peer facade :8795] -- private RPC wallet/helper/bridge --> W
   B[banking :8796] -- helper: charge/safe_address/on_tap/identity --> W
@@ -47,7 +47,7 @@ npm run check:prf                  # Passkey PRF + 2-of-4 Safe + 2-of-2 Arkade/L
 Boot refuses when:
 - `SERVICE_MODE` is anything other than `wallet` (`src/wallet-server.mjs:42`)
 - any of `WIREX_TOKEN_URL`, `WIREX_COMPANY_ID`, `WIREX_CLIENT_ID` or `WIREX_CLIENT_SECRET` is set (`src/service-mode.mjs:24-28`)
-- an agent custody value is missing (`src/server-boot-check.mjs:6-15`)
+- an agent custody value is missing (`src/server-boot-check.mjs:5-33`)
 - `SERVICE_RPC_SECRET` is shorter than 32 characters (`src/service-rpc.mjs:22`)
 
 ## Pure-L1 0-Conf Arkade Fronter (`AGENT_BTC_CUSTODY_MODE=l1_0conf`)
@@ -89,19 +89,22 @@ on GitHub-hosted runners; no live payment or deployment is part of the checks.
 
 | Route | Source |
 |---|---|
-| `POST /mcp`: `initialize`, `tools/list` (= `wallet`), `tools/call` | `src/wallet-server.mjs:257-301` |
-| `POST /rpc/tool` (loopback, bearer `SERVICE_RPC_SECRET`) | `src/service-rpc.mjs:21-45`, `src/wallet-server.mjs:120-154` |
-| `GET /healthz` | `src/wallet-server.mjs:173-176` |
-| `GET /v1/fronter/status` (15s cached public float & fee monitor) | `src/wallet-server.mjs` |
-| `GET /` role page | `src/service-index.mjs:6-10` |
-| `GET /bridge/privy`, `/bridge/privy/wirex`, `/bridge/privy.js` | `src/wallet-server.mjs:178-187` |
-| `/api/browser-sessions/<id>[/approval\|/callback\|/connection]`, `/pending` | `src/wallet-server.mjs:188-234` |
-| `GET/POST /s`, `GET /short-link.mjs` | `src/wallet-server.mjs:166-171` |
+| `POST /mcp` (`GET`/`HEAD`/`DELETE` supported): `initialize`, `tools/list` (= `wallet`), `tools/call` | `src/wallet-server.mjs:347,414-490` |
+| `POST /v1/wallet`, `/v1/balance`, `/v1/receive`, `/v1/pay`, `/v1/history` (`Bearer`) | `src/wallet-server.mjs:175-181,285-287,369-412` |
+| `POST /rpc/tool` (loopback, bearer `SERVICE_RPC_SECRET`) | `src/service-rpc.mjs:21-45`, `src/wallet-server.mjs:132-166,197` |
+| `GET /healthz` | `src/wallet-server.mjs:198-203` |
+| `GET /v1/fronter/status` (15s cached public float & fee monitor) | `src/wallet-server.mjs:204-222` |
+| `GET /.well-known/lnurlp/:u`, `GET /lnurl/callback/:u` (LNURL-pay) | `src/wallet-server.mjs:263-284` |
+| `GET /llms.txt`, `/skill.md`, `/openapi.json`, `/robots.txt`, `/sitemap.xml` | `src/wallet-server.mjs:230-260`, `src/service-index.mjs:34-252` |
+| `GET /` role page | `src/wallet-server.mjs:223-229`, `src/service-index.mjs:254,1200-1201` |
+| `GET /bridge/privy`, `/bridge/privy/wirex`, `/bridge/privy.js` | `src/wallet-server.mjs:288-297` |
+| `/api/browser-sessions/<id>[/approval\|/callback\|/connection]`, `/pending` | `src/wallet-server.mjs:298-344` |
+| `GET/POST /s`, `GET /short-link.mjs` | `src/wallet-server.mjs:191-196` |
 
 Public MCP endpoint: `https://wallet.paymentrequired.com/mcp` (catalog `wallet`,
-`src/wallet-server.mjs:235,257-301`); connect links use the existing root signer broker
-(`src/wallet-server.mjs:114-118`). Docs and llms files stay on the apex (`src/service-index.mjs:52-53`);
-the apex `/mcp` no longer serves tools (approved-scope.md, 2026-10-14).
+`src/wallet-server.mjs:347,414-490`); connect links use the existing root signer broker
+(`src/wallet-server.mjs:109,112-114`). Host-aware `/llms.txt`, `/skill.md`, and `/openapi.json`
+are served directly by this wallet service (`src/wallet-server.mjs:230-260`).
 
 See `ARCHITECTURE.md` (owned stores, peers, peer-down behaviour), `DEPLOY.md` (image, mounts,
 env), and `EXTRACTION.md` (what came from the monolith, and why).
