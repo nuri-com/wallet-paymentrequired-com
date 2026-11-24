@@ -2,6 +2,12 @@
 
 ## 2026-11-24 — Emin; recorded by Antigravity
 
+- **"test it through, with real money, real signing etc. ... just document it well on all repos with links"**
+  - Removed all custom SHA-256 tagged-hash / deterministic-nonce code from `nuri-0conf-bitcoin-lightning-fronter/rust/` (`bitcoin::taproot::TapTweakHash::from_key_and_tweak` + `musig2::SecNonceBuilder` OS CSPRNG + SQLite `l1_signed_responses` replay cache) and exposed bearer-authenticated `POST /v1/agent/grants/register`.
+  - Verified against real **Bitcoin Core v31.1.0 regtest** consensus (`5`-block CSV: Rust key-path `28839323...` mined, RBF blocked `outpoint_already_signed`, CSV safety guard `csv_timelock_too_close` at age 3; unilateral CSV recovery `2dd6959b...` rejected by Bitcoin Core `non-BIP68-final` at age 4 and mined unmodified at age 5).
+  - Verified against **Bitcoin mainnet** with `3,000` real sats sent from `smartcard@nuriwallet.com` (`eb95ec57...:0` → Hop 1 Rust MuSig2 sign + split `2a8acc3a...` → Hop 2 immediate `0-conf` change sweep `a3de1913...` back to Pool L1 hot `bc1pge7p...`; `0` remaining UTXOs; live `/v1/fronter/status` `totalFloatSats: 33,314`, `netFloatEquitySats: 33,237`).
+  - Rewrote `nuri-0conf-bitcoin-lightning-fronter/README.md` strictly for the verified present and cross-linked all three repos.
+
 - **"so its fully working in both directions, can you test a few more back and force sendings? ... i am sending another 10k sats"**
   - Root-cause caught live: Emin's `10,000`-sat LN payment (`rfq_id: 5fc86f4a5b74fdf1`, `9,955` gross) was claimed into pool Arkade (`8,667 -> 18,622`), but `claimLightningReceive` aborted on `fronter_l1_pool_insufficient_liquidity` because Pool L1 hot wallet held `1,775` sats (< `10,099` sats payout), hiding the user's credit.
   - Fix (`src/agent-l1-fronter-v2.mjs` + TEST 18, `a9773f7`): pre-broadcast `sendL1Payout` liquidity/fee errors now fall back gracefully to `deferred_l1_credit` (`pending_receive_sats` spendable immediately over LN / auto-swept later), immediately auto-crediting `10,099` sats (`+200` `2%` fee).

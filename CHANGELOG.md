@@ -5,6 +5,10 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — Cross-links & live Rust mainnet proof sync (2026-11-24)
+
+- Update `README.md`, `docs/L1-0CONF-ARKADE-FRONTER.md`, and `PROMPTLOG.md` with cross-links across `wallet-paymentrequired-com`, `nuri-agent-cosigner/docs/ARCHITECTURE.md`, and `nuri-0conf-bitcoin-lightning-fronter`, plus the verified Bitcoin Core v31.1.0 regtest consensus and real-money mainnet Rust signing proof (`eb95ec57...` → `2a8acc3a...` → `a3de1913...`, `/v1/fronter/status` `totalFloatSats: 33,314`, `netFloatEquitySats: 33,237`).
+
 - Clean up orphaned legacy `paying_ln` rows without `swap_pk_script_hex` after 10 minutes inside `reconcilePendingBroadcasts` and scope the Path 3 `inFlightLends` guard to active tracked VHTLCs so pre-upgrade rows cannot block `l1_0conf` sends (`src/agent-l1-fronter-v2.mjs`).
 
 ## Unreleased — Stress-test hardening: broadcast-attempt lock guard, `sendOnchainBtc` WAL, ancestor-depth cap & Esplora 429 backoff (2026-11-24)
