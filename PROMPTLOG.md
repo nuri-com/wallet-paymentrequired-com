@@ -2,6 +2,8 @@
 
 ## 2026-11-24 — Emin; recorded by Antigravity
 
+- **"send the 1337 to emino ... make a local wallet and send back and forth autonomously"**
+  - Caught live mainnet blocker: `mempool.space/api/fee-estimates` target-3 dropped to `0.812` sat/vB, triggering `esplora_fee_rate_invalid` (`rate < 1`). Fixed `createEsploraL1Client.estimateFeeRate` (`rate > 0` -> `Math.max(1, Math.ceil(rate))`) + added TEST 17 before running live `1,337`-sat + autonomous ping-pong proof.
 - **"switch to a muun.com like model where bitcoin is always onchain ... 100% ARKADE on server pool, NOT Spark ... test on paymentrequired.com (nuriwallet.com) without touching nuri.com or arkade.nuri.com"**
   - Decision: Keep user/agent BTC funds solely in `tr(MuSig2(agent, cosigner), pk(agent) + CSV)` on Bitcoin L1 (`src/agent-l1-fronter-v2.mjs`) and run a single server-side Arkade + L1 liquidity pool (`l1_0conf` mode), leaving consumer `app.nuri.com` and `arkade.nuri.com` 100% untouched. Rejected client-side VTXO wallets (too heavy) and raw un-cosigned 0-conf (RBF-vulnerable).
   - Live discovery: `nuri-agent-cosigner` on `46.225.135.119:8794` runs `blocks: 4320` (~30d), so `wallet-paymentrequired-com` live-syncs CSV & network from cosigner `/healthz` for byte-identical `bc1p...` addresses; also verified 0-byte divergence vs live mainnet `@lennard` (`app.nuri.com`).

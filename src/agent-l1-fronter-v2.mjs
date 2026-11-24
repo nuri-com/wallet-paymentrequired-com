@@ -470,10 +470,10 @@ export function createEsploraL1Client({
         if (!ok) throw new Error("esplora_fee_estimates_missing");
         const map = await res.json();
         const rate = Number(map?.[String(targetBlocks)] ?? map?.["6"] ?? map?.["1"]);
-        if (!Number.isFinite(rate) || rate < 1) {
+        if (!Number.isFinite(rate) || rate <= 0) {
           throw new Error("esplora_fee_rate_invalid");
         }
-        cachedFeeRate = Math.ceil(rate);
+        cachedFeeRate = Math.max(1, Math.ceil(rate));
         cachedFeeRateAt = Date.now();
         return cachedFeeRate;
       } catch (err) {

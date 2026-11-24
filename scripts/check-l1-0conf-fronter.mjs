@@ -12,6 +12,7 @@ import {
   DEFAULT_L1_CSV,
   buildUserCsvRecoveryTx,
   createAgentL1FronterRuntime,
+  createEsploraL1Client,
   deriveAgentL1Wallet,
   derivePoolLightningSendLockup,
   estimateP2trVbytes,
@@ -789,6 +790,21 @@ async function main() {
       } finally {
         feeRuntime.close();
       }
+    }
+
+    // TEST 17: Esplora estimateFeeRate clamps sub-1 sat/vB mainnet rates to >= 1 sat/vB and rejects <= 0
+    {
+      const okEsplora = createEsploraL1Client({
+        baseUrl: "https://esplora.example/api",
+        fetchImpl: async () => new Response(JSON.stringify({ 1: 1.501, 3: 0.812, 6: 0.342 }), { status: 200 }),
+      });
+      assert.equal(await okEsplora.estimateFeeRate(3), 1);
+
+      const badEsplora = createEsploraL1Client({
+        baseUrl: "https://esplora.example/api",
+        fetchImpl: async () => new Response(JSON.stringify({ 3: 0 }), { status: 200 }),
+      });
+      await assert.rejects(() => badEsplora.estimateFeeRate(3), /esplora_fee_rate_invalid/);
     }
 
     console.log(

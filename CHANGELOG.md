@@ -5,6 +5,10 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — Sub-1 sat/vB Esplora fee-estimate clamp (2026-11-24)
+
+- Fix `createEsploraL1Client.estimateFeeRate` (`src/agent-l1-fronter-v2.mjs`) to accept sub-1 sat/vB mainnet mempool rates (`rate > 0`, e.g. `0.812` sat/vB on `mempool.space/api/fee-estimates`) and clamp `Math.max(1, Math.ceil(rate))` instead of throwing `esplora_fee_rate_invalid`; add TEST 17 in `scripts/check-l1-0conf-fronter.mjs`.
+
 ## Unreleased — 2% bidirectional LN fronter fees, `btc_unconfirmed_sats`, and `GET /v1/fronter/status` (2026-11-24)
 
 - Add `FRONTER_RECEIVE_FEE_BPS` (`receiveFeeBps`, e.g. `200` bps = `2%`) alongside `FRONTER_SERVICE_FEE_BPS`, track `service_fee_sats` per swap in `nuri_l1_fronter_swaps` (`aggregateTotals().earnedServiceFeeSats`, `completedOutSwaps`, `completedInSwaps`), and expose `totalFloatSats`, `netFloatEquitySats`, and `feesConfig` from `getPoolStatus()` (`src/agent-l1-fronter-v2.mjs`).
