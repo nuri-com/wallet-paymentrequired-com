@@ -807,6 +807,70 @@ async function main() {
       await assert.rejects(() => badEsplora.estimateFeeRate(3), /esplora_fee_rate_invalid/);
     }
 
+    // TEST 18: Deferred L1 credit fallback when pool L1 hot wallet has insufficient liquidity for payout
+    {
+      utxosByAddress.set(l1Wallet.address, []);
+      const dryL1Pool = {
+        ...serverPool,
+        async sendL1Payout() {
+          throw new Error("fronter_l1_pool_insufficient_liquidity");
+        },
+        async quoteLightningSend({ bolt11 }) {
+          const m = /^lnbc(\d+)n/.exec(bolt11);
+          const invoiceAmountSats = Number(BigInt(m[1]) / 10n);
+          return {
+            rfqId: randomBytes(16).toString("hex"),
+            invoiceAmountSats,
+            lnFeeSats: 10,
+            serviceFeeSats: Math.ceil((invoiceAmountSats * 200) / 10_000),
+            totalCostSats: invoiceAmountSats + 10 + Math.ceil((invoiceAmountSats * 200) / 10_000),
+          };
+        },
+      };
+      const deferRuntime = createAgentL1FronterRuntime({
+        cosignerClient,
+        ledgerPath: ":memory:",
+        esploraClient: esplora,
+        serverPool: dryL1Pool,
+        network: "bitcoin",
+        lendMaxSats: 500,
+        maxDebtSats: 10_000,
+        l1SettleFloorSats: 1_000,
+        sendFeeBps: 200,
+        receiveFeeBps: 200,
+      });
+      try {
+        const rfqBigIn = await deferRuntime.createLightningReceive({ walletRecord, amountSats: 10_000 });
+        incomingPaidMap.set(rfqBigIn.rfqId, 10_000);
+        const claimed = await deferRuntime.claimLightningReceive({
+          walletRecord,
+          receiveRecord: { ...rfqBigIn, expectedAmountSats: 10_000 },
+        });
+        assert.equal(claimed.status, "claimed");
+        assert.equal(claimed.settlementMode, "deferred_l1_credit");
+        assert.equal(claimed.l1PayoutDeferred, true);
+        assert.equal(claimed.serviceFeeSats, 200);
+        assert.equal(claimed.claimedSats, 9_800);
+        assert.equal(claimed.pendingReceiveSats, 9_800);
+
+        const bal = await deferRuntime.readBalance(walletRecord);
+        assert.equal(bal.sats, 9_800n);
+
+        // Immediately spendable over LN via micro_credit
+        const invOut = makeBolt11({ amountSats: 5_000, preimageHex: "0a".repeat(32) });
+        invoicePreimages.set(invOut.bolt11, invOut.preimageHex);
+        const paid = await deferRuntime.payBolt11Invoice({
+          walletRecord,
+          agentBtcPrivHex: bytesToHex(agentPriv),
+          bolt11: invOut.bolt11,
+          opId: "op-defer-spend",
+        });
+        assert.equal(paid.settlementMode, "micro_credit");
+      } finally {
+        deferRuntime.close();
+      }
+    }
+
     console.log(
       "l1 0-conf fronter check ok: pure L1 MuSig2+CSV wallet, live CSV sync (blocks:4320), real @arkade-os/swap lockup derivation, unilateral CSV Tapscript recovery, Muun LEND/COLLECT/FulfillFullDebt, hold-broadcast abort & timeout lock safety, broadcast_pending crash reconciler, 5x concurrent claim mutex, maxSats-with-L1-fee, 2% bidirectional fees + float equity monitor, and direct L1 send verified",
     );

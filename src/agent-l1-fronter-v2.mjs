@@ -2421,80 +2421,96 @@ export function createAgentL1FronterRuntime({
       const poolForL1 = ledgerState.pendingReceiveSats + remainingAfterDebt;
 
       // Step 2: Settle immediately as a 0-conf L1 P2TR tx to user's `bc1p...` if >= settle floor!
+      let l1PayoutDeferredReason = null;
       if (poolForL1 >= l1SettleFloorSats) {
-        let payout;
+        let payout = null;
         try {
           payout = await pool.sendL1Payout({
             toScriptHex: l1.scriptPubKeyHex,
             amountSats: poolForL1,
           });
         } catch (err) {
-          // L1 payout never broadcast -> delete claiming reservation so next tick can retry safely.
-          store.db.prepare("DELETE FROM nuri_l1_fronter_swaps WHERE op_id = ? AND status = 'claiming'").run(opId);
-          throw err;
+          const msg = String(err?.message || err || "");
+          const isPreBroadcastDefer =
+            msg === "fronter_l1_pool_insufficient_liquidity" ||
+            msg === "fronter_l1_hot_wallet_not_configured" ||
+            msg === "fronter_l1_payout_below_dust_after_fee" ||
+            msg.startsWith("l1_fee_estimation_unavailable");
+          if (isPreBroadcastDefer) {
+            l1PayoutDeferredReason = msg;
+          } else {
+            // L1 payout broadcast uncertain or failed unexpectedly -> delete claiming reservation so next tick retries safely.
+            store.db.prepare("DELETE FROM nuri_l1_fronter_swaps WHERE op_id = ? AND status = 'claiming'").run(opId);
+            throw err;
+          }
         }
 
-        const mode = debtCanceled > 0 ? "partial_debt_l1_settle" : "l1_0conf_settle";
-        // Persist `done` + `l1_txid` + ledger + local UTXO ATOMICALLY BEFORE calling cosigner!
-        // Guarantees zero infinite re-payout loops even if cosigner is transiently unreachable.
-        store.runTx(() => {
-          store.addTrustedUtxo({
-            walletId: walletRecord.walletId,
-            txid: payout.txid,
-            vout: payout.vout,
-            amountSats: payout.payoutSats,
-            scriptPubKeyHex: l1.scriptPubKeyHex,
-            sourceKind: "fronter_payout",
-            ancestorDepth: 1,
-          });
-          store.setLedger(walletRecord.walletId, { debtSats: newDebt, pendingReceiveSats: 0 });
-          store.upsertSwap({
-            opId,
-            walletId: walletRecord.walletId,
-            direction: "in",
-            mode,
-            status: "done",
-            paymentHash: receiveRecord.paymentHash || null,
-            amountSats: creditedSats,
-            feeSats: payout.feeSats + receiveServiceFeeSats,
-            serviceFeeSats: receiveServiceFeeSats,
-            debtDeltaSats: -debtCanceled,
-            l1Txid: payout.txid,
-          });
-        });
-
-        // Non-fatal cosigner trusted-outpoint registration (output still becomes spendable at 1-conf if this fails).
-        let trustedRegistered = false;
-        if (cosignerClient && typeof cosignerClient.registerTrustedL1Outpoint === "function") {
-          try {
-            await cosignerClient.registerTrustedL1Outpoint({
-              cred_id_b64u: walletRecord.credIdB64u,
-              index: walletRecord.slotIndex,
-              outpoint: `${payout.txid}:${payout.vout}`,
-              source_kind: "fronter_payout",
-              amount_sats: payout.payoutSats,
+        if (payout) {
+          const mode = debtCanceled > 0 ? "partial_debt_l1_settle" : "l1_0conf_settle";
+          // Persist `done` + `l1_txid` + ledger + local UTXO ATOMICALLY BEFORE calling cosigner!
+          // Guarantees zero infinite re-payout loops even if cosigner is transiently unreachable.
+          store.runTx(() => {
+            store.addTrustedUtxo({
+              walletId: walletRecord.walletId,
+              txid: payout.txid,
+              vout: payout.vout,
+              amountSats: payout.payoutSats,
+              scriptPubKeyHex: l1.scriptPubKeyHex,
+              sourceKind: "fronter_payout",
+              ancestorDepth: 1,
             });
-            trustedRegistered = true;
-          } catch {}
-        }
+            store.setLedger(walletRecord.walletId, { debtSats: newDebt, pendingReceiveSats: 0 });
+            store.upsertSwap({
+              opId,
+              walletId: walletRecord.walletId,
+              direction: "in",
+              mode,
+              status: "done",
+              paymentHash: receiveRecord.paymentHash || null,
+              amountSats: creditedSats,
+              feeSats: payout.feeSats + receiveServiceFeeSats,
+              serviceFeeSats: receiveServiceFeeSats,
+              debtDeltaSats: -debtCanceled,
+              l1Txid: payout.txid,
+            });
+          });
 
-        return {
-          status: "claimed",
-          claimTxid: payout.txid,
-          grossClaimedSats: netReceivedSats,
-          claimedSats: creditedSats,
-          serviceFeeSats: receiveServiceFeeSats,
-          l1PayoutSats: payout.payoutSats,
-          l1FeeSats: payout.feeSats,
-          debtCanceledSats: debtCanceled,
-          trustedRegistered,
-          settlementMode: mode,
-        };
+          // Non-fatal cosigner trusted-outpoint registration (output still becomes spendable at 1-conf if this fails).
+          let trustedRegistered = false;
+          if (cosignerClient && typeof cosignerClient.registerTrustedL1Outpoint === "function") {
+            try {
+              await cosignerClient.registerTrustedL1Outpoint({
+                cred_id_b64u: walletRecord.credIdB64u,
+                index: walletRecord.slotIndex,
+                outpoint: `${payout.txid}:${payout.vout}`,
+                source_kind: "fronter_payout",
+                amount_sats: payout.payoutSats,
+              });
+              trustedRegistered = true;
+            } catch {}
+          }
+
+          return {
+            status: "claimed",
+            claimTxid: payout.txid,
+            grossClaimedSats: netReceivedSats,
+            claimedSats: creditedSats,
+            serviceFeeSats: receiveServiceFeeSats,
+            l1PayoutSats: payout.payoutSats,
+            l1FeeSats: payout.feeSats,
+            debtCanceledSats: debtCanceled,
+            trustedRegistered,
+            settlementMode: mode,
+          };
+        }
       }
 
-      // Step 3: Full debt cancellation (`full_debt`) or micro-receive credit (`micro_credit`)
-      const mode =
-        remainingAfterDebt === 0
+      // Step 3: Full debt cancellation (`full_debt`), micro-receive credit (`micro_credit`), or deferred L1 fallback
+      const mode = l1PayoutDeferredReason
+        ? debtCanceled > 0
+          ? "full_debt_plus_deferred_l1"
+          : "deferred_l1_credit"
+        : remainingAfterDebt === 0
           ? "full_debt"
           : debtCanceled > 0
             ? "full_debt_plus_micro"
@@ -2527,6 +2543,9 @@ export function createAgentL1FronterRuntime({
         debtCanceledSats: debtCanceled,
         pendingReceiveSats: poolForL1,
         settlementMode: mode,
+        ...(l1PayoutDeferredReason
+          ? { l1PayoutDeferred: true, l1PayoutDeferredReason }
+          : {}),
       };
     });
   }

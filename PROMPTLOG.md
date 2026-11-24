@@ -2,6 +2,9 @@
 
 ## 2026-11-24 — Emin; recorded by Antigravity
 
+- **"so its fully working in both directions, can you test a few more back and force sendings? ... i am sending another 10k sats"**
+  - Root-cause caught live: Emin's `10,000`-sat LN payment (`rfq_id: 5fc86f4a5b74fdf1`, `9,955` gross) was claimed into pool Arkade (`8,667 -> 18,622`), but `claimLightningReceive` aborted on `fronter_l1_pool_insufficient_liquidity` because Pool L1 hot wallet held `1,775` sats (< `10,099` sats payout), hiding the user's credit.
+  - Fix (`src/agent-l1-fronter-v2.mjs` + TEST 18): pre-broadcast `sendL1Payout` liquidity/fee errors now fall back gracefully to `deferred_l1_credit` (`pending_receive_sats` spendable immediately over LN / auto-swept later), preserving `2%` fee accounting.
 - **"send the 1337 to emino ... make a local wallet and send back and forth autonomously"**
   - Fixed live mainnet blocker: `mempool.space/api/fee-estimates` target-3 dropped to `0.812` sat/vB (`esplora_fee_rate_invalid` when `< 1`). Updated `createEsploraL1Client.estimateFeeRate` (`rate > 0` -> `Math.max(1, Math.ceil(rate))`) + added TEST 17 (`bf138b3`).
   - Live mainnet `1,337`-sat proof: Paid `1,337` sats from `smartcard@nuriwallet.com` to `emino@nuri.com` (`lend` mode, preimage `a1bd306e...`, `fee_sats: 32` incl. `+27` `2%` fee); plus `497`-sat inbound (`+10` `2%` fee) auto-triggered `full_debt_plus_micro` (`FulfillFullDebt`, `-373` debt cancelled).
