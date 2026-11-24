@@ -911,6 +911,9 @@ export function createPrfWalletCoordinator({
       walletRecord.arkadeAddress = arkadeState.address;
     }
 
+    const lnurlHandles = ensureStore().listLnurlHandlesByWallet(walletRecord.walletId);
+    const lnurlAddresses = lnurlHandles.map((h) => `${h.username}@nuriwallet.com`);
+
     return {
       available: unitsToDecimal(String(usdcUnits), 6),
       usdc: unitsToDecimal(String(usdcUnits), 6),
@@ -933,6 +936,12 @@ export function createPrfWalletCoordinator({
         : arkadeState.address
           ? { arkade_address: arkadeState.address }
           : {}),
+      ...(lnurlAddresses.length
+        ? {
+            lnurl: lnurlAddresses[0],
+            ...(lnurlAddresses.length > 1 ? { lnurl_addresses: lnurlAddresses } : {}),
+          }
+        : {}),
       ...(solanaSigner ? { solana_address: solanaSigner.address,
         solana_usdc: unitsToDecimal(String(solanaResult.status === "fulfilled" ? solanaResult.value : 0n), 6) } : {}),
     };
@@ -946,8 +955,9 @@ export function createPrfWalletCoordinator({
       : balances.arkade_address
         ? ` Arkade ${balances.arkade_address}`
         : "";
+    const lnurlPart = balances.lnurl ? ` LNURL ${balances.lnurl};` : "";
     const solana = balances.solana_address ? ` AND Solana USDC ${balances.solana_usdc || "0"} (${balances.solana_address})` : "";
-    return `Show ALL rails to the user: Base USDC ${usdc} (${balances.address}) AND Bitcoin ${sats} sats / ${balances.btc || "0"} BTC (${btcAddr ? `${btcAddr.trim()}; ` : ""}Lightning invoice via receive rail="lightning")${solana}.`;
+    return `Show ALL rails to the user: Base USDC ${usdc} (${balances.address}) AND Bitcoin ${sats} sats / ${balances.btc || "0"} BTC (${btcAddr ? `${btcAddr.trim()};` : ""}${lnurlPart} Lightning invoice via receive rail="lightning")${solana}.`;
   }
 
   async function startOrPollOnboarding({ requestId, slotIndex = 0, policy = DEFAULT_GRANT_POLICY } = {}) {
@@ -1285,13 +1295,14 @@ export function createPrfWalletCoordinator({
         }
         throw error;
       }
+      const isL1Mode = ensureArkade().custodyMode === "l1_0conf";
       return {
         ok: true,
         status: "done",
         rail: "lnurl",
         lnurl: `${handle.username}@nuriwallet.com`,
         username: handle.username,
-        next: `Your Lightning address is ${handle.username}@nuriwallet.com. Payers get a BOLT11 invoice; paid sats are claimed into your Arkade wallet automatically.`,
+        next: `Your Lightning address is ${handle.username}@nuriwallet.com. Payers get a BOLT11 invoice; paid sats are claimed into your ${isL1Mode ? "Bitcoin L1" : "Arkade"} wallet automatically.`,
       };
     }
 
@@ -1323,6 +1334,9 @@ export function createPrfWalletCoordinator({
       };
     }
 
+    const walletLnurls = db.listLnurlHandlesByWallet(wallet.walletId).map((h) => `${h.username}@nuriwallet.com`);
+    const lnurlField = walletLnurls.length ? { lnurl: walletLnurls[0] } : {};
+
     if (requestedRail === "arkade" || requestedRail === "btc") {
       const ark = await ensureArkade().readBalance(wallet);
       if (ark.custodyMode === "l1_0conf") {
@@ -1332,9 +1346,10 @@ export function createPrfWalletCoordinator({
           rail: "btc",
           btc_custody_mode: "l1_0conf",
           btc_address: ark.btcAddress || ark.address,
+          ...lnurlField,
           sats: Number(ark.sats),
           btc: formatSatsAsBtc(ark.sats),
-          next: `Send on-chain Bitcoin (L1) to ${ark.btcAddress || ark.address}, then call wallet balance.`,
+          next: `Send on-chain Bitcoin (L1) to ${ark.btcAddress || ark.address}${walletLnurls.length ? ` or Lightning to ${walletLnurls[0]}` : ""}, then call wallet balance.`,
         };
       }
       if (ark.address && ark.address !== wallet.arkadeAddress) {
@@ -1345,9 +1360,10 @@ export function createPrfWalletCoordinator({
         status: "done",
         rail: "arkade",
         arkade_address: ark.address,
+        ...lnurlField,
         sats: Number(ark.sats),
         btc: formatSatsAsBtc(ark.sats),
-        next: `Send Arkade sats to ${ark.address}, then call wallet balance.`,
+        next: `Send Arkade sats to ${ark.address}${walletLnurls.length ? ` or Lightning to ${walletLnurls[0]}` : ""}, then call wallet balance.`,
       };
     }
 
@@ -1436,6 +1452,7 @@ export function createPrfWalletCoordinator({
         expected_sats: created.expectedAmountSats,
         fee_sats: created.feeSats,
         expires_at: created.expiresAt,
+        ...lnurlField,
         ...(isL1Recv
           ? { btc_custody_mode: "l1_0conf", btc_address: created.payoutAddress }
           : { arkade_address: created.payoutAddress }),

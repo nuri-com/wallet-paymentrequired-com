@@ -5,6 +5,10 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — Report registered `username@nuriwallet.com` LNURL in wallet balance & receive (2026-11-24)
+
+- Include registered `lnurl` (`username@nuriwallet.com`, plus `lnurl_addresses` if multiple) in `readDualBalances`, `dualBalanceSummary`, and BTC/Arkade/Lightning `receive` responses (`src/mcp-wallet-prf-v2.mjs`), and tailor LNURL registration confirmation text for `l1_0conf` mode.
+
 ## Unreleased — Document L1 0-conf Arkade fronter findings, env vars & `nuri-expo` proof (2026-11-24)
 
 - Add `docs/L1-0CONF-ARKADE-FRONTER.md` documenting the Muun-model pure-L1 2-of-2 MuSig2+CSV +
