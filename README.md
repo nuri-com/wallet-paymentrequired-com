@@ -55,9 +55,9 @@ Boot refuses when:
 Optional Muun-model custody mode (`src/agent-l1-fronter-v2.mjs`) where user/agent wallets hold **only plain Bitcoin L1 UTXOs** in `tr(MuSig2(agent, cosigner), pk(agent) + CSV)` and route all Lightning sends/receives through a **single server-side Arkade liquidity pool** (zero per-user Arkade VTXOs, zero VTXO renewals, 1-tx native L1 sends, and `buildUserCsvRecoveryTx` unilateral CSV exit):
 
 - **Live cosigner sync:** syncs `nuri_server_csv` (e.g. `blocks: 4320` on `46.225.135.119`) and `l1_network` from `nuri-agent-cosigner /healthz` so `bc1p...` addresses always match byte-for-byte.
-- **Zero-fee failure & tiny sends:** hold-broadcast anti-RBF locks outpoints at `nuri-agent-cosigner` until LN preimage (0 L1 fee on failure), paired with Muun-style `LEND` (`<= FRONTER_LEND_MAX_SATS`), `COLLECT`, `FulfillFullDebt`, and `FRONTER_L1_SETTLE_FLOOR_SATS` auto-sweep.
+- **Zero-fee failure & tiny sends:** hold-broadcast anti-RBF locks outpoints at `nuri-agent-cosigner` until LN preimage (0 L1 fee on failure), paired with Muun-style `LEND` (`<= FRONTER_LEND_MAX_SATS`), `COLLECT`, `FulfillFullDebt`, `FRONTER_L1_SETTLE_FLOOR_SATS` auto-sweep, and `deferred_l1_credit` fallback when Pool L1 liquidity is below an incoming payout.
 - **Activation & inspection:** configure `FRONTER_ARKADE_PRIVKEY_HEX` + `FRONTER_L1_PRIVKEY_HEX` (and optional `FRONTER_SERVICE_FEE_BPS` / `FRONTER_RECEIVE_FEE_BPS`, e.g. `200` bps = `2%`), check pool float, fees & revenue live at `GET /v1/fronter/status` or loopback `POST /rpc/tool` (`l1_pool_status`) + `GET /healthz`, then set `AGENT_BTC_CUSTODY_MODE=l1_0conf`.
-- **Full findings, SDK fixes & `app.nuri.com` (`nuri-expo`) proof:** see [`docs/L1-0CONF-ARKADE-FRONTER.md`](docs/L1-0CONF-ARKADE-FRONTER.md).
+- **Full findings, live 24-swap proof & Muun/Rust hardening analysis:** see [`docs/L1-0CONF-ARKADE-FRONTER.md`](docs/L1-0CONF-ARKADE-FRONTER.md) and [`MUUN-VS-NURI-ARCHITECTURE-AND-RUNTIME-HARDENING.md`](https://github.com/nuri-com/nuri-0conf-bitcoin-lightning-fronter/blob/main/docs/MUUN-VS-NURI-ARCHITECTURE-AND-RUNTIME-HARDENING.md).
 
 ## Ask AI from the agent wallet
 

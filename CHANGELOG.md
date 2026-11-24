@@ -5,6 +5,10 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — Live 24-swap mainnet proof, test sweep & hardening docs (2026-11-24)
+
+- Sync `docs/L1-0CONF-ARKADE-FRONTER.md`, `README.md`, and `PROMPTLOG.md` with the completed 24-swap Bitcoin mainnet proof (`12` out / `12` in, `earnedServiceFeeSats: 705`, `+545` sats net earned profit, all 5 L1 txs confirmed incl. `ad0f15dc...` + `bf79ee2a...` in block `977404`), the `8,255`-sat off-chain test sweep back to Pool Arkade (`4679ef6c...` -> `totalFloatSats: 19,365`, `netFloatEquitySats: 18,800`), the 18-test E2E suite count, and the 5-point Muun-parity production-hardening roadmap.
+
 ## Unreleased — Graceful deferred L1 credit when pool L1 hot wallet < inbound payout (2026-11-24)
 
 - Fix `claimLightningReceive` (`src/agent-l1-fronter-v2.mjs`) so when `pool.sendL1Payout` throws a pre-broadcast liquidity/config/fee error (`fronter_l1_pool_insufficient_liquidity`, `fronter_l1_hot_wallet_not_configured`, `fronter_l1_payout_below_dust_after_fee`, `l1_fee_estimation_unavailable`), the already-claimed Arkade sats fall back cleanly to `deferred_l1_credit` / `full_debt_plus_deferred_l1` (`pending_receive_sats`, immediately spendable over LN or swept on a later claim once pool L1 liquidity is replenished) instead of blocking the claim and hiding credited sats; add TEST 18 in `scripts/check-l1-0conf-fronter.mjs`.
