@@ -60,6 +60,30 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "${DEPLOY_HOST}" >> ~/.ssh/known_hosts 2>/dev/null
 
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes "${DEPLOY_USER}@${DEPLOY_HOST}" 'bash -s' <<'PRUNE'
+          set -euo pipefail
+          echo "=== Disk before Docker cleanup ==="
+          df -h /
+          ENV_FILE="/opt/paymentrequired/split-images.env"
+          ACTIVE_WALLET="$(grep '^PR_WALLET_IMAGE=' "$ENV_FILE" 2>/dev/null | head -n1 | cut -d= -f2- || true)"
+          ACTIVE_COSIGNER="$(grep '^PR_AGENT_COSIGNER_IMAGE=' "$ENV_FILE" 2>/dev/null | head -n1 | cut -d= -f2- || true)"
+          RUNNING_IDS="$(docker ps -q | xargs -r docker inspect --format '{{.Image}}' || true)"
+          for ref in $(docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '^(paymentrequired-wallet|nuri-agent-cosigner):' || true); do
+            case "$ref" in
+              *:rollback|"$ACTIVE_WALLET"|"$ACTIVE_COSIGNER"|*":<none>") continue ;;
+            esac
+            img_id="$(docker image inspect -f '{{.Id}}' "$ref" 2>/dev/null || true)"
+            if [ -n "$img_id" ] && printf '%s\n' "$RUNNING_IDS" | grep -Fxq "$img_id"; then
+              continue
+            fi
+            docker rmi "$ref" || true
+          done
+          docker image prune -f || true
+          docker builder prune -f || true
+          echo "=== Disk after Docker cleanup ==="
+          df -h /
+          PRUNE
+
           docker save "${IMAGE_TAG}" | gzip -1 | ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes "${DEPLOY_USER}@${DEPLOY_HOST}" "gunzip | docker load"
 
           ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes "${DEPLOY_USER}@${DEPLOY_HOST}" bash -s -- "${IMAGE_TAG}" "${IMAGE_ID}" "${GIT_SHA}" "${SRC_SHA256}" <<'REMOTE'
