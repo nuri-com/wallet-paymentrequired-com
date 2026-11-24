@@ -5,6 +5,16 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — Document L1 0-conf Arkade fronter findings, env vars & `nuri-expo` proof (2026-11-24)
+
+- Add `docs/L1-0CONF-ARKADE-FRONTER.md` documenting the Muun-model pure-L1 2-of-2 MuSig2+CSV +
+  server-only Arkade liquidity pool architecture, Muun `apollo` 1-sat verification (`LEND`/
+  `COLLECT`/`FulfillFullDebt`), live `@arkade-os/sdk@0.5.8` & `@arkade-os/swap@0.1.8` fixes,
+  live `46.225.135.119` `blocks: 4320` CSV sync, concurrency/crash hardening, `FRONTER_*`
+  environment variables, and zero-divergence `app.nuri.com` (`nuri-expo`) compatibility proof.
+- Add Pure-L1 0-Conf Arkade Fronter configuration, `l1_pool_status` RPC, and `/healthz` surface
+  section to `README.md`.
+
 ## Unreleased — Hardened L1 0-conf Arkade Fronter: real SDK fixes, crash reconciler, concurrency & CSV recovery (2026-11-24)
 
 - Live-sync `nuri_server_csv` and `l1_network` from `nuri-agent-cosigner /healthz` so derived `bc1p...`

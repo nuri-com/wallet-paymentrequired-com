@@ -50,6 +50,15 @@ Boot refuses when:
 - an agent custody value is missing (`src/server-boot-check.mjs:6-15`)
 - `SERVICE_RPC_SECRET` is shorter than 32 characters (`src/service-rpc.mjs:22`)
 
+## Pure-L1 0-Conf Arkade Fronter (`AGENT_BTC_CUSTODY_MODE=l1_0conf`)
+
+Optional Muun-model custody mode (`src/agent-l1-fronter-v2.mjs`) where user/agent wallets hold **only plain Bitcoin L1 UTXOs** in `tr(MuSig2(agent, cosigner), pk(agent) + CSV)` and route all Lightning sends/receives through a **single server-side Arkade liquidity pool** (zero per-user Arkade VTXOs, zero VTXO renewals, 1-tx native L1 sends, and `buildUserCsvRecoveryTx` unilateral CSV exit):
+
+- **Live cosigner sync:** syncs `nuri_server_csv` (e.g. `blocks: 4320` on `46.225.135.119`) and `l1_network` from `nuri-agent-cosigner /healthz` so `bc1p...` addresses always match byte-for-byte.
+- **Zero-fee failure & tiny sends:** hold-broadcast anti-RBF locks outpoints at `nuri-agent-cosigner` until LN preimage (0 L1 fee on failure), paired with Muun-style `LEND` (`<= FRONTER_LEND_MAX_SATS`), `COLLECT`, `FulfillFullDebt`, and `FRONTER_L1_SETTLE_FLOOR_SATS` auto-sweep.
+- **Activation & inspection:** configure `FRONTER_ARKADE_PRIVKEY_HEX` + `FRONTER_L1_PRIVKEY_HEX`, check pool addresses/balances via loopback `POST /rpc/tool` (`l1_pool_status`) and `GET /healthz` (`l1_0conf_fronter_supported`, `l1_pool_configured`), then set `AGENT_BTC_CUSTODY_MODE=l1_0conf`.
+- **Full findings, SDK fixes & `app.nuri.com` (`nuri-expo`) proof:** see [`docs/L1-0CONF-ARKADE-FRONTER.md`](docs/L1-0CONF-ARKADE-FRONTER.md).
+
 ## Ask AI from the agent wallet
 
 One `wallet` tool call (`src/mcp-wallet-tool.mjs`, `ask`):
