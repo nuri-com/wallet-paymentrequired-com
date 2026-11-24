@@ -5,6 +5,10 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — Hardware-first smartcard/FIDO2 onboarding cascade in `/skill.md` & `/llms.txt` (2026-11-24)
+
+- Update `/skill.md` and `/llms.txt` (`src/service-index.mjs`) so AI agents check for a connected PC/SC Nuri Smartcard or USB-HID FIDO2 security key first (`nuricard connect --probe` / `nuricard connect <approval_url>` — zero browser/extension, native OS PIN prompt) and fall back to browser Passkey `approval_url` only when no hardware key is present; also document `lnurl_username` (`username@nuriwallet.com`) registration and `lnurl` reporting in `balance`.
+
 ## Unreleased — Report registered `username@nuriwallet.com` LNURL in wallet balance & receive (2026-11-24)
 
 - Include registered `lnurl` (`username@nuriwallet.com`, plus `lnurl_addresses` if multiple) in `readDualBalances`, `dualBalanceSummary`, and BTC/Arkade/Lightning `receive` responses (`src/mcp-wallet-prf-v2.mjs`), and tailor LNURL registration confirmation text for `l1_0conf` mode.
