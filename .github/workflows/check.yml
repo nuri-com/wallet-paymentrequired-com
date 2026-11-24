@@ -1,12 +1,20 @@
 name: wallet checks
+# Pushes to main are checked by deploy.yml before deploying.
 on:
-  push:
-    branches: [main, feat/wallet-ask-20261018]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  # Repeat passes only on manual runs; PRs and pushes run each suite once.
+  REPEAT: ${{ github.event_name == 'workflow_dispatch' && 3 || 1 }}
 permissions:
   contents: read
 jobs:
   check:
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -17,8 +25,8 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run check
-      - name: Offline ask integration (three runs)
-        run: for run in 1 2 3; do npm run check:ask || exit 1; done
+      - name: Offline ask integration (repeated three times on manual runs)
+        run: for run in $(seq "$REPEAT"); do npm run check:ask || exit 1; done
       - name: Negative controls and restored pass
         run: npm run check:ask:regression
       - name: Passkey PRF + 2-of-4 Safe + 2-of-2 Arkade/Lightning E2E
