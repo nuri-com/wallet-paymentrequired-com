@@ -16,6 +16,7 @@ import {
   deriveAgentL1Wallet,
   derivePoolLightningSendLockup,
   estimateP2trVbytes,
+  openL1FronterLedger,
 } from "../src/agent-l1-fronter-v2.mjs";
 import { ArkAddress } from "@arkade-os/sdk";
 import { lightningSendContract } from "@arkade-os/swap/protocol";
@@ -950,8 +951,53 @@ async function main() {
         });
         assert.equal(doneReplay.status, "done");
         assert.equal(doneReplay.preimageHex, lendPreimageHex);
-      } finally {
+
+        // 19c: Stale pre-patch `paying_ln` row with swap_pk_script_hex=null is marked failed >10m and does NOT block Path 3!
         lendRecRuntime.close();
+      } catch (e) {
+        lendRecRuntime.close();
+        throw e;
+      }
+      const staleLedger = openL1FronterLedger(":memory:");
+      const staleRuntime = createAgentL1FronterRuntime({
+        cosignerClient: trackedCosigner,
+        ledger: staleLedger,
+        esploraClient: esplora,
+        serverPool: serverPool,
+        network: "bitcoin",
+        lendMaxSats: 500,
+        maxDebtSats: 10_000,
+        l1SettleFloorSats: 1_000,
+      });
+      try {
+        const invStale = makeBolt11({ amountSats: 1_500, preimageHex: "0c".repeat(32) });
+        invoicePreimages.set(invStale.bolt11, invStale.preimageHex);
+        staleLedger.upsertSwap({
+          opId: "op-legacy-paying-ln",
+          walletId: walletRecord.walletId,
+          direction: "out",
+          mode: "lend",
+          status: "paying_ln",
+          paymentHash: invStale.paymentHash,
+          bolt11: invStale.bolt11,
+          amountSats: 400,
+          feeSats: 10,
+        });
+        staleLedger.db
+          .prepare("UPDATE nuri_l1_fronter_swaps SET updated_at_ms = ? WHERE op_id = 'op-legacy-paying-ln'")
+          .run(Date.now() - 15 * 60_000);
+        await staleRuntime.readBalance(walletRecord);
+        assert.equal(staleLedger.getSwap("op-legacy-paying-ln").status, "failed");
+        const paidAfterStale = await staleRuntime.payBolt11Invoice({
+          walletRecord,
+          agentBtcPrivHex: bytesToHex(agentPriv),
+          bolt11: invStale.bolt11,
+          opId: "op-after-stale-lend",
+        });
+        assert.equal(paidAfterStale.settlementMode, "l1_0conf");
+      } finally {
+        staleRuntime.close();
+        staleLedger.close();
       }
     }
 

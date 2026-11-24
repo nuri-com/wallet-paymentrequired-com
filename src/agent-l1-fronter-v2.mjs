@@ -1738,9 +1738,26 @@ export function createAgentL1FronterRuntime({
    */
   async function reconcilePendingBroadcasts(walletRecord) {
     const inFlight = store.listSwapsByStatus(walletRecord.walletId, ["paying_ln"]);
-    if (inFlight.length > 0 && typeof pool.checkArkadeLockupFate === "function") {
+    if (inFlight.length > 0) {
       for (const row of inFlight) {
-        if (!row.swap_pk_script_hex || !row.payment_hash) continue;
+        if (!row.swap_pk_script_hex) {
+          if (Date.now() - Number(row.updated_at_ms || 0) > 10 * 60_000) {
+            store.upsertSwap({
+              opId: row.op_id,
+              walletId: row.wallet_id,
+              direction: row.direction,
+              mode: row.mode,
+              status: "failed",
+              paymentHash: row.payment_hash,
+              bolt11: row.bolt11,
+              amountSats: row.amount_sats,
+              feeSats: 0,
+              error: row.error || "stale_paying_ln_without_vhtlc_ref",
+            });
+          }
+          continue;
+        }
+        if (!row.payment_hash || typeof pool.checkArkadeLockupFate !== "function") continue;
         try {
           const liveFate = await pool.checkArkadeLockupFate({
             swapPkScriptHex: row.swap_pk_script_hex,
@@ -2419,7 +2436,7 @@ export function createAgentL1FronterRuntime({
       }
       const inFlightLends = store
         .listSwapsByStatus(walletRecord.walletId, ["paying_ln"])
-        .filter((s) => s.mode === "lend");
+        .filter((s) => s.mode === "lend" && Boolean(s.swap_pk_script_hex));
       if (inFlightLends.length > 0) {
         throw new Error("l1_lend_in_flight");
       }

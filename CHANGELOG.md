@@ -5,6 +5,8 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+- Clean up orphaned legacy `paying_ln` rows without `swap_pk_script_hex` after 10 minutes inside `reconcilePendingBroadcasts` and scope the Path 3 `inFlightLends` guard to active tracked VHTLCs so pre-upgrade rows cannot block `l1_0conf` sends (`src/agent-l1-fronter-v2.mjs`).
+
 ## Unreleased — Stress-test hardening: broadcast-attempt lock guard, `sendOnchainBtc` WAL, ancestor-depth cap & Esplora 429 backoff (2026-11-24)
 
 - Prevent potential double L1 payouts if `sendL1Payout` fails/times out after attempting `broadcastTx` (`err.l1BroadcastAttempted`), persist `broadcast_pending` before `sendOnchainBtc` broadcast, use exact multi-input fee in debt-collateral checks, and guard `Path 3` against concurrent in-flight `LEND` sends + refund overflow (`src/agent-l1-fronter-v2.mjs`).
