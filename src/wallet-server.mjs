@@ -136,6 +136,7 @@ rpcTools.set(HELPER.name, { tool: HELPER, call: async (args, { signal } = {}) =>
   if (args.op === "safe_address") return walletLocal.safeAddressFor(args.session, { signal });
   if (args.op === "charge") return toolCharges.charge(String(args.name), args.args ?? {}, { signal });
   if (args.op === "remember") return toolCharges.remember(String(args.name), args.charged, args.answer) ?? null;
+  if (args.op === "l1_pool_status") return walletLocal.l1PoolStatus();
   if (args.op === "on_tap") {
     // Bound to the wallet's OWN row for the tapped link: walletId, consent text, pinned root and app
     // come from that row, never from the caller. The row stays as is.
@@ -194,7 +195,8 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/healthz") {
       return writeJson(req, res, 200, { ok: true, version: VERSION, git_sha: GIT_SHA, built_at: process.env.BUILT_AT || null, built_by: process.env.BUILT_BY || null, release_phase: "prototyping",
         tools: mcpTools.map((tool) => tool.name), service_mode: SERVICE.mode, public_base: browserBridge.publicBase, aa_rpc: aaConfig.bundlerUrl,
-        btc_custody_mode: String(process.env.AGENT_BTC_CUSTODY_MODE || "arkade").trim().toLowerCase(), l1_0conf_fronter_supported: true });
+        btc_custody_mode: String(process.env.AGENT_BTC_CUSTODY_MODE || "arkade").trim().toLowerCase(), l1_0conf_fronter_supported: true,
+        l1_pool_configured: Boolean(process.env.FRONTER_ARKADE_PRIVKEY_HEX && (process.env.FRONTER_L1_DEPOSIT_ADDRESS || process.env.FRONTER_L1_PRIVKEY_HEX || process.env.FRONTER_ARKADE_PRIVKEY_HEX)) });
     }
     if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/") {
       const origin = resolveWalletOrigin(req);

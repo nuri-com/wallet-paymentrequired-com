@@ -172,7 +172,7 @@ export function parseL402Challenge(headers) {
   const schemeMatch = /(?:^|,)\s*(L402|LSAT)\s+([^,]+(?:\s*,\s*[a-zA-Z0-9_-]+\s*=\s*(?:"[^"]*"|[^\s,]+))*)/i.exec(raw);
   if (!schemeMatch) return null;
   const scheme = schemeMatch[1].toUpperCase();
-  const paramsRaw = raw.slice(schemeMatch.index + schemeMatch[0].indexOf(schemeMatch[1]) + schemeMatch[1].length);
+  const paramsRaw = schemeMatch[2] || "";
   const params = {};
   const paramRe = /([a-zA-Z0-9_-]+)\s*=\s*(?:"([^"]*)"|([^\s,]+))/g;
   let m;
@@ -195,10 +195,12 @@ export function parseL402Challenge(headers) {
  */
 export function parseLightningMppChallenges(headers) {
   const raw = getHeader(headers, "www-authenticate");
-  if (typeof raw !== "string" || !/^\s*Payment\s/i.test(raw)) return [];
+  if (typeof raw !== "string") return [];
+  const payMatch = /(?:^|,)\s*(Payment\s[\s\S]+)$/i.exec(raw);
+  if (!payMatch) return [];
   let list;
   try {
-    list = Challenge.deserializeList(raw);
+    list = Challenge.deserializeList(payMatch[1]);
   } catch {
     return [];
   }

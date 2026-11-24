@@ -322,12 +322,13 @@ export function createPrfWalletCoordinator({
           agentBtcPrivHex: secrets.agentBtcPrivHex,
           receiveRecord: {
             rfqId: selfRecv.rfqId,
+            paymentHash: selfRecv.paymentHash,
             expectedAmountSats: selfRecv.expectedAmountSats,
             quoteJson: selfRecv.quoteJson,
           },
         });
         if (claim.status === "claimed") {
-          claimedSats = claim.claimedSats ?? selfRecv.expectedAmountSats;
+          claimedSats = claim.l1PayoutSats ?? claim.claimedSats ?? selfRecv.expectedAmountSats;
           db.markLightningReceiveClaimed(selfRecv.rfqId, {
             claimTxid: claim.claimTxid || null,
             claimedSats,
@@ -758,7 +759,11 @@ export function createPrfWalletCoordinator({
     if (!op || op.status !== "pending" || op.action !== "pay") return op;
     const s = op.summary || {};
 
-    if (s.swap_pk_script_hex && s.payment_hash && typeof ensureArkade().checkLightningSendFate === "function") {
+    if (
+      (s.swap_pk_script_hex || ensureArkade().custodyMode === "l1_0conf") &&
+      s.payment_hash &&
+      typeof ensureArkade().checkLightningSendFate === "function"
+    ) {
       try {
         const fate = await ensureArkade().checkLightningSendFate({
           swapPkScriptHex: s.swap_pk_script_hex,
@@ -882,15 +887,25 @@ export function createPrfWalletCoordinator({
     ]);
 
     const usdcUnits = usdcResult.status === "fulfilled" ? usdcResult.value : 0n;
-    const arkadeState =
-      arkResult.status === "fulfilled"
-        ? arkResult.value
-        : {
-            address: walletRecord.arkadeAddress || null,
-            sats: 0n,
-          };
+    const isL1Mode = ensureArkade().custodyMode === "l1_0conf";
+    const btcUnavailable = arkResult.status !== "fulfilled";
+    let arkadeState;
+    if (arkResult.status === "fulfilled") {
+      arkadeState = arkResult.value;
+    } else {
+      let fallbackAddr = isL1Mode ? null : walletRecord.arkadeAddress || null;
+      if (isL1Mode && typeof ensureArkade().deriveWalletScript === "function") {
+        try {
+          fallbackAddr = (await ensureArkade().deriveWalletScript(walletRecord)).address;
+        } catch {}
+      }
+      arkadeState = {
+        address: fallbackAddr,
+        btcAddress: isL1Mode ? fallbackAddr : null,
+        sats: 0n,
+      };
+    }
 
-    const isL1Mode = arkadeState.custodyMode === "l1_0conf";
     if (!isL1Mode && arkadeState.address && arkadeState.address !== walletRecord.arkadeAddress) {
       ensureStore().updateWalletArkadeAddress(walletRecord.walletId, arkadeState.address);
       walletRecord.arkadeAddress = arkadeState.address;
@@ -903,10 +918,13 @@ export function createPrfWalletCoordinator({
       owner_address: walletRecord.mainEoa,
       sats: Number(arkadeState.sats),
       btc: formatSatsAsBtc(arkadeState.sats),
+      ...(btcUnavailable ? { btc_balance_unavailable: true } : {}),
       ...(isL1Mode
         ? {
             btc_custody_mode: "l1_0conf",
-            btc_address: arkadeState.btcAddress || arkadeState.address,
+            ...(arkadeState.btcAddress || arkadeState.address
+              ? { btc_address: arkadeState.btcAddress || arkadeState.address }
+              : {}),
             ...(arkadeState.debtSats ? { btc_debt_sats: arkadeState.debtSats } : {}),
             ...(arkadeState.pendingReceiveSats
               ? { btc_pending_l1_sweep_sats: arkadeState.pendingReceiveSats }
@@ -1225,11 +1243,12 @@ export function createPrfWalletCoordinator({
       try {
         const db = ensureStore();
         const now = Math.floor(Date.now() / 1000); // expires_at is epoch seconds
+        // 4h grace window past invoice expiry so payments settled just before expiry still claim cleanly.
         const rows = db.db
           .prepare(
             "SELECT * FROM nuri_prf_lightning_receives WHERE status = 'pending' AND request_id LIKE 'lnurlp:%' AND expires_at > ? ORDER BY created_at ASC LIMIT 20",
           )
-          .all(now);
+          .all(now - 4 * 3600);
         for (const row of rows) {
           const username = String(row.request_id || "").split(":")[1];
           const handle = username ? db.getLnurlHandle(username) : null;
@@ -1338,6 +1357,7 @@ export function createPrfWalletCoordinator({
         if (existing) {
           if (existing.status === "claimed") {
             const ark = await ensureArkade().readBalance(wallet);
+            const isL1 = ensureArkade().custodyMode === "l1_0conf";
             return {
               ok: true,
               status: "done",
@@ -1346,8 +1366,16 @@ export function createPrfWalletCoordinator({
               payment_hash: existing.paymentHash,
               amount_sats: existing.claimedSats ?? existing.expectedAmountSats,
               sats: Number(ark.sats),
-              arkade_address: ark.address,
-              next: "Lightning payment received and claimed into 2-of-2 Arkade custody.",
+              ...(isL1
+                ? {
+                    btc_custody_mode: "l1_0conf",
+                    btc_address: ark.btcAddress || ark.address,
+                    next: "Lightning payment received and settled into your L1 2-of-2 MuSig2 Bitcoin wallet.",
+                  }
+                : {
+                    arkade_address: ark.address,
+                    next: "Lightning payment received and claimed into 2-of-2 Arkade custody.",
+                  }),
             };
           }
           scheduleReceiveAutoClaim(wallet, secrets.agentBtcPrivHex, existing);
@@ -1396,6 +1424,7 @@ export function createPrfWalletCoordinator({
         payoutAddress: created.payoutAddress,
         quoteJson: created.quoteJson,
       });
+      const isL1Recv = ensureArkade().custodyMode === "l1_0conf";
       const out = {
         ok: true,
         status: "done",
@@ -1407,7 +1436,9 @@ export function createPrfWalletCoordinator({
         expected_sats: created.expectedAmountSats,
         fee_sats: created.feeSats,
         expires_at: created.expiresAt,
-        arkade_address: created.payoutAddress,
+        ...(isL1Recv
+          ? { btc_custody_mode: "l1_0conf", btc_address: created.payoutAddress }
+          : { arkade_address: created.payoutAddress }),
         next: `Share invoice for ${created.payAmountSats} sats (includes ${created.feeSats} sats fee; you net ${created.expectedAmountSats} sats). Once paid, calling wallet balance automatically sweeps the sats into your balance.`,
       };
       db.recordOperation({
@@ -1454,24 +1485,33 @@ export function createPrfWalletCoordinator({
       err.invoiceSats = facts.amountSats;
       throw err;
     }
+    let effectiveMaxSats = maxSats !== undefined && maxSats !== null ? BigInt(maxSats) : null;
     if (maxAmountUnits !== undefined && maxAmountUnits !== null) {
       const btcUsd = await resolveBtcUsdRate().catch(() => null);
-      if (BigInt(facts.amountSats) > usdUnitsToMaxSats(maxAmountUnits, btcUsd)) {
+      const usdCapSats = usdUnitsToMaxSats(maxAmountUnits, btcUsd);
+      if (BigInt(facts.amountSats) > usdCapSats) {
         const err = new Error("invoice_exceeds_max_amount");
         err.code = "over_max_amount";
         err.invoiceSats = facts.amountSats;
         throw err;
       }
+      if (effectiveMaxSats === null || usdCapSats < effectiveMaxSats) {
+        effectiveMaxSats = usdCapSats;
+      }
     }
 
-    const arkBal = await ensureArkade().readBalance(wallet).catch(() => ({ sats: 0n }));
-    const feeBuffer = BigInt(Math.max(100, Math.ceil(facts.amountSats * 0.03)));
-    if (arkBal.sats >= BigInt(facts.amountSats) + feeBuffer) {
-      const paid = await ensureArkade().payBolt11Invoice({
+    const btcRuntime = ensureArkade();
+    const arkBal = await btcRuntime.readBalance(wallet).catch(() => ({ sats: 0n }));
+    const estOverhead =
+      typeof btcRuntime.estimateSendOverheadSats === "function"
+        ? BigInt(await btcRuntime.estimateSendOverheadSats(wallet, facts.amountSats))
+        : BigInt(Math.max(100, Math.ceil(facts.amountSats * 0.03)));
+    if (arkBal.sats >= BigInt(facts.amountSats) + estOverhead) {
+      const paid = await btcRuntime.payBolt11Invoice({
         walletRecord: wallet,
         agentBtcPrivHex: secrets.agentBtcPrivHex,
         bolt11: cleanInvoice,
-        maxSats,
+        maxSats: effectiveMaxSats !== null ? Number(effectiveMaxSats) : undefined,
         opId,
       });
       return { mode: "native", paid };
@@ -1481,11 +1521,11 @@ export function createPrfWalletCoordinator({
     const usdcBal = await ensureSafe().readUsdcBalanceUnits(wallet.safeAddress).catch(() => 0n);
     if (usdcBal <= 0n) {
       // Let native path produce the normal insufficient-sats error if both rails are empty.
-      const paid = await ensureArkade().payBolt11Invoice({
+      const paid = await btcRuntime.payBolt11Invoice({
         walletRecord: wallet,
         agentBtcPrivHex: secrets.agentBtcPrivHex,
         bolt11: cleanInvoice,
-        maxSats,
+        maxSats: effectiveMaxSats !== null ? Number(effectiveMaxSats) : undefined,
         opId,
       });
       return { mode: "native", paid };
@@ -1605,17 +1645,28 @@ export function createPrfWalletCoordinator({
       ensureArkade().readBalance(wallet),
       ensureSafe().readUsdcBalanceUnits(wallet.safeAddress),
     ]);
-    const arkSats = arkRes.status === "fulfilled" ? arkRes.value.sats : 0n;
+    const arkState = arkRes.status === "fulfilled" ? arkRes.value : { sats: 0n };
+    const arkSats = arkState.sats ?? 0n;
+    const onchainL1Avail =
+      (arkState.onchainConfirmedSats ?? 0n) + (arkState.onchainUnconfirmedTrustedSats ?? 0n);
     const usdcBal = usdcRes.status === "fulfilled" ? usdcRes.value : 0n;
     const btcRuntime = ensureArkade();
 
-    // Direct native L1 MuSig2 spend when running in pure-L1 0-conf mode (no SwapKit hop!).
-    if (typeof btcRuntime.sendOnchainBtc === "function" && arkSats >= BigInt(amountSats) + 350n) {
+    let effectiveMaxSats = maxSats !== undefined && maxSats !== null ? BigInt(maxSats) : null;
+    if (maxAmountUnits !== undefined && maxAmountUnits !== null) {
+      const btcUsd = await resolveBtcUsdRate().catch(() => null);
+      const usdCapSats = usdUnitsToMaxSats(maxAmountUnits, btcUsd);
+      if (effectiveMaxSats === null || usdCapSats < effectiveMaxSats) effectiveMaxSats = usdCapSats;
+    }
+
+    // Direct native L1 MuSig2 spend when running in pure-L1 0-conf mode (uses actual L1 UTXOs, no SwapKit hop!).
+    if (typeof btcRuntime.sendOnchainBtc === "function" && onchainL1Avail >= BigInt(amountSats) + 350n) {
       const sent = await btcRuntime.sendOnchainBtc({
         walletRecord: wallet,
         agentBtcPrivHex: secrets.agentBtcPrivHex,
         toBtcAddress: btcAddress,
         amountSats,
+        maxSats: effectiveMaxSats !== null ? Number(effectiveMaxSats) : null,
         opId: `${opId}:l1-direct`,
       });
       return {
@@ -2464,12 +2515,24 @@ export function createPrfWalletCoordinator({
 
   function close() {
     closed = true;
+    if (lnurlClaimTimer) {
+      clearInterval(lnurlClaimTimer);
+      lnurlClaimTimer = null;
+    }
     for (const rfqId of [...activeReceiveWatchers.keys()]) {
       stopReceiveWatcher(rfqId);
     }
     arkade?.close?.();
     store?.close?.();
     store = null;
+  }
+
+  async function getL1PoolStatus() {
+    const rt = ensureArkade();
+    if (typeof rt.getPoolStatus === "function") {
+      return rt.getPoolStatus();
+    }
+    return { configured: false, custodyMode: rt.custodyMode || "arkade" };
   }
 
   return {
@@ -2482,6 +2545,7 @@ export function createPrfWalletCoordinator({
     handleHistory,
     handleLnurl,
     startLnurlAutoClaim,
+    getL1PoolStatus,
     payFeeWithPrfWallet,
     findLatestWalletByMainEoa: (owner) =>
       configured ? ensureStore().findLatestWalletByMainEoa(owner) : null,

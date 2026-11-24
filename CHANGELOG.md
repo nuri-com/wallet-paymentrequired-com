@@ -5,6 +5,20 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — Hardened L1 0-conf Arkade Fronter: real SDK fixes, crash reconciler, concurrency & CSV recovery (2026-11-24)
+
+- Live-sync `nuri_server_csv` and `l1_network` from `nuri-agent-cosigner /healthz` so derived `bc1p...`
+  addresses always match live cosigner configuration (e.g. `blocks: 4320` on `46.225.135.119`).
+- Fix `@arkade-os/sdk@0.5.8` / `@arkade-os/swap@0.1.8` server pool runtime calls (`derivePoolLightningSendLockup`
+  with exact `lightningSendContract` params + `preTimelockedRefund` legacy fallback + `verifyLockupAddress(quote, candidates)`,
+  `fate === "returned" | "exited"`, `pushClaim` pagination loop, `v.isSwept` filter, `resolveEmulatorPubkey` empty-string
+  guard, `FRONTER_L1_DEPOSIT_ADDRESS` precedence, and `l1_pool_status` loopback RPC helper).
+- Add per-wallet & pool async mutexes + pool L1 hot-wallet change tracking, atomic SQLite inbound claim reservation
+  (eliminating concurrent double payouts and non-fatal cosigner trust-register loops), crash-safe `broadcast_pending`
+  reconciler, timeout lock preservation (never releasing L1 locks while VHTLC is live), cosigner `/v1/l1/authorize-spend`
+  for `LEND` / `micro_credit`, `maxSats` enforcement including L1 miner fees, ancestor-depth cap (<=20), stale trusted
+  UTXO pruning, `buildUserCsvRecoveryTx` unilateral Tapscript CSV exit, and multi-scheme `WWW-Authenticate` parsing fix.
+
 ## Unreleased — Muun-model Pure-L1 2-of-2 MuSig2+CSV + Server-Only Arkade 0-Conf Fronter (2026-11-24)
 
 - Add `src/agent-l1-fronter-v2.mjs` (`createAgentL1FronterRuntime`, `deriveAgentL1Wallet`,

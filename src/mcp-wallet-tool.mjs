@@ -1093,7 +1093,9 @@ export function createMcpWalletTool({ accountFlow, chainId, path, wirexBaas, bri
     return null;
   }
 
-  return { tool: WALLET_TOOL, call, onTap, recordTap, payFee, safeAddressFor, close() {
+  return { tool: WALLET_TOOL, call, onTap, recordTap, payFee, safeAddressFor,
+    l1PoolStatus: () => prfCoordinator().getL1PoolStatus(),
+    close() {
     if (closed) return;
     closed = true;
     try { prfV2?.close?.(); } finally { prfV2 = null; }

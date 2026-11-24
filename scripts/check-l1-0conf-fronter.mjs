@@ -10,10 +10,14 @@ import { schnorr, secp256k1 } from "@noble/curves/secp256k1";
 import { sha256 } from "@noble/hashes/sha256";
 import {
   DEFAULT_L1_CSV,
+  buildUserCsvRecoveryTx,
   createAgentL1FronterRuntime,
   deriveAgentL1Wallet,
+  derivePoolLightningSendLockup,
   estimateP2trVbytes,
 } from "../src/agent-l1-fronter-v2.mjs";
+import { ArkAddress } from "@arkade-os/sdk";
+import { lightningSendContract } from "@arkade-os/swap/protocol";
 import { createPrfWalletCoordinator } from "../src/mcp-wallet-prf-v2.mjs";
 import { openPrfAgentWalletStore } from "../src/prf-agent-wallet-store.mjs";
 
@@ -511,8 +515,200 @@ async function main() {
       assert.equal(b.tx.id.toLowerCase(), b.txid);
     }
 
+    // TEST 10: Live cosigner healthz() CSV sync (matches live 46.225.135.119 `{ type: "blocks", value: 4320 }`)!
+    {
+      const syncedRuntime = createAgentL1FronterRuntime({
+        cosignerClient: {
+          ...cosignerClient,
+          async healthz() {
+            return { ok: true, l1_network: "bitcoin", nuri_server_csv: { type: "blocks", value: 4320 } };
+          },
+        },
+        ledgerPath: ":memory:",
+        esploraClient: esplora,
+        serverPool,
+      });
+      const derived4320 = await syncedRuntime.deriveWalletScript(walletRecord);
+      const expected4320 = deriveAgentL1Wallet({
+        aggregatedBtcXonlyHex: bytesToHex(aggXonly),
+        agentBtcPub33Hex: bytesToHex(agentPub33),
+        nuriServerCsv: { type: "blocks", value: 4320 },
+        network: "bitcoin",
+      });
+      assert.equal(derived4320.address, expected4320.address);
+      assert.notEqual(derived4320.address, l1Wallet.address, "blocks:4320 differs from seconds:7776256");
+      const ps = await syncedRuntime.getPoolStatus();
+      assert.equal(ps.nuriServerCsv.type, "blocks");
+      assert.equal(ps.nuriServerCsv.value, 4320);
+      syncedRuntime.close();
+    }
+
+    // TEST 11: Real @arkade-os/swap `derivePoolLightningSendLockup` (standard + legacy preTimelockedRefund)!
+    {
+      const now = Math.floor(Date.now() / 1000);
+      const solverPk = schnorr.getPublicKey(hexToBytes("a1".repeat(32)));
+      const opPk = schnorr.getPublicKey(hexToBytes("a2".repeat(32)));
+      const emuPk = schnorr.getPublicKey(hexToBytes("a3".repeat(32)));
+      const senderPk = schnorr.getPublicKey(hexToBytes("a4".repeat(32)));
+      const recvP2tr = p2tr(solverPk, undefined, NETWORK);
+      const refundP2tr = p2tr(senderPk, undefined, NETWORK);
+      const pHash = bytesToHex(sha256(hexToBytes("ab".repeat(32))));
+      const base = {
+        solverPubkey: solverPk,
+        refundLocktime: now + 7200,
+        operatorPubkey: opPk,
+        paymentHash: pHash,
+        claimDelay: 605184,
+        refundWithoutReceiverDelay: 609280,
+        emulatorPubkey: emuPk,
+        refundPkScript: refundP2tr.script,
+        senderPubkey: senderPk,
+        receiverPkScript: recvP2tr.script,
+      };
+      for (const legacy of [undefined, "preTimelockedRefund"]) {
+        const expectedContract = lightningSendContract(legacy ? { ...base, legacy } : base);
+        const expectedAddr = new ArkAddress(opPk, expectedContract.tweakedPublicKey, "ark").encode();
+        const lockup = derivePoolLightningSendLockup({
+          quote: {
+            solver_pubkey: bytesToHex(solverPk),
+            refund_locktime: now + 7200,
+            valid_until: now + 600,
+            profile: {
+              lockup_address: expectedAddr,
+              receiver_pk_script: bytesToHex(recvP2tr.script),
+              refund_without_receiver_delay: 609280,
+            },
+          },
+          paymentHash: pHash,
+          senderPubkey: senderPk,
+          refundPkScript: refundP2tr.script,
+          operatorPubkey: opPk,
+          emulatorPubkey: emuPk,
+          claimDelay: 605184,
+          hrp: "ark",
+          now,
+        });
+        assert.equal(lockup.address, expectedAddr);
+      }
+    }
+
+    // TEST 12: Sovereign unilateral user CSV recovery tx (zero cosigner, zero Arkade, valid BIP-341 Tapscript sig!)
+    {
+      const recovery = buildUserCsvRecoveryTx({
+        agentBtcPrivHex: bytesToHex(agentPriv),
+        agentBtcPub33Hex: bytesToHex(agentPub33),
+        aggregatedBtcXonlyHex: bytesToHex(aggXonly),
+        nuriServerCsv: { type: "blocks", value: 4320 },
+        utxos: [{ txid: "de".repeat(32), vout: 0, value: 50_000 }],
+        toBtcAddress: extDest,
+        feeRateSatVb: 2,
+        network: "bitcoin",
+      });
+      const recTx = Transaction.fromRaw(hexToBytes(recovery.rawHex), { allowUnknownOutputs: true });
+      assert.equal(recTx.id.toLowerCase(), recovery.txid);
+      assert.equal(recTx.getInput(0).sequence, 4320);
+      assert.equal(recTx.getInput(0).finalScriptWitness.length, 3);
+      assert.equal(recTx.getInput(0).finalScriptWitness[0].length, 64);
+      assert.ok(recovery.outputSats > 49_000);
+    }
+
+    // TEST 13: Concurrent 5x claimLightningReceive + failing registerTrustedL1Outpoint -> EXACTLY 1 L1 payout!
+    {
+      const beforeBroadcasts = broadcasts.length;
+      const inStorm = await l1Runtime.createLightningReceive({ walletRecord, amountSats: 8_000, rfqId: "rfq-storm-1" });
+      incomingPaidMap.set("rfq-storm-1", 8_000);
+      const origReg = cosignerClient.registerTrustedL1Outpoint;
+      cosignerClient.registerTrustedL1Outpoint = async () => {
+        throw new Error("cosigner_transient_503");
+      };
+      try {
+        const results = await Promise.all(
+          Array.from({ length: 5 }, () =>
+            l1Runtime.claimLightningReceive({
+              walletRecord,
+              receiveRecord: { rfqId: "rfq-storm-1", expectedAmountSats: 8_000, paymentHash: inStorm.paymentHash },
+            }),
+          ),
+        );
+        assert.equal(broadcasts.length, beforeBroadcasts + 1, "5 concurrent claims MUST broadcast EXACTLY 1 L1 payout!");
+        assert.ok(results.every((r) => r.status === "claimed"));
+      } finally {
+        cosignerClient.registerTrustedL1Outpoint = origReg;
+      }
+    }
+
+    // TEST 14: Crash-safe broadcast_pending reconciler + timeout MUST NOT release locked outpoints!
+    {
+      // 14a: Transient broadcast failure -> swap saves preimage & broadcast_pending, next readBalance broadcasts!
+      const origBroadcast = esplora.broadcastTx;
+      let failOnce = true;
+      esplora.broadcastTx = async (raw) => {
+        if (failOnce) {
+          failOnce = false;
+          throw new Error("esplora_503_transient");
+        }
+        return origBroadcast(raw);
+      };
+      const invCrash = makeBolt11({ amountSats: 6_000, preimageHex: "06".repeat(32) });
+      invoicePreimages.set(invCrash.bolt11, invCrash.preimageHex);
+      const beforeCount = broadcasts.length;
+      const paidCrash = await l1Runtime.payBolt11Invoice({
+        walletRecord,
+        agentBtcPrivHex: bytesToHex(agentPriv),
+        bolt11: invCrash.bolt11,
+        opId: "op-crash-reconcile",
+      });
+      assert.equal(paidCrash.preimageHex, invCrash.preimageHex);
+      assert.equal(paidCrash.l1BroadcastPending, true);
+      assert.equal(broadcasts.length, beforeCount);
+      // Next readBalance reconciles and broadcasts the held raw L1 tx!
+      await l1Runtime.readBalance(walletRecord);
+      assert.equal(broadcasts.length, beforeCount + 1, "Reconciler broadcast pending L1 tx cleanly!");
+      esplora.broadcastTx = origBroadcast;
+
+      // 14b: Timeout while VHTLC live (`safeToReleaseL1: false`) MUST keep outpoints locked!
+      const origPay = serverPool.payLightningInvoice;
+      serverPool.payLightningInvoice = async () => {
+        const err = new Error("fronter_arkade_lightning_send_timeout");
+        err.safeToReleaseL1 = false;
+        throw err;
+      };
+      const invTimeout = makeBolt11({ amountSats: 6_000, preimageHex: "07".repeat(32) });
+      invoicePreimages.set(invTimeout.bolt11, invTimeout.preimageHex);
+      const locksBefore = lockedOutpoints.size;
+      await assert.rejects(
+        () =>
+          l1Runtime.payBolt11Invoice({
+            walletRecord,
+            agentBtcPrivHex: bytesToHex(agentPriv),
+            bolt11: invTimeout.bolt11,
+            opId: "op-timeout-keeps-lock",
+          }),
+        /timeout/,
+      );
+      assert.ok(lockedOutpoints.size > locksBefore, "Timeout with live VHTLC MUST NOT release L1 outpoint lock!");
+      serverPool.payLightningInvoice = origPay;
+    }
+
+    // TEST 15: maxSats enforces total INCLUDING L1 miner fee before cosigning!
+    {
+      const invCap = makeBolt11({ amountSats: 6_000, preimageHex: "08".repeat(32) });
+      invoicePreimages.set(invCap.bolt11, invCap.preimageHex);
+      await assert.rejects(
+        () =>
+          l1Runtime.payBolt11Invoice({
+            walletRecord,
+            agentBtcPrivHex: bytesToHex(agentPriv),
+            bolt11: invCap.bolt11,
+            maxSats: 6_050, // covers LN fee (15) but NOT L1 miner fee (~308 sats)!
+            opId: "op-cap-l1-fee",
+          }),
+        /total_with_l1_fee_exceeds_max_sats/,
+      );
+    }
+
     console.log(
-      "l1 0-conf fronter check ok: pure L1 MuSig2+CSV wallet, Muun LEND (1-sat & 500-sat zero-L1-tx), FulfillFullDebt, hold-broadcast abort (0 fee), L1 0-conf + COLLECT, trusted 0-conf change chaining, instant LN->L1 0-conf payout, micro-receive auto-sweep, and direct L1 send verified",
+      "l1 0-conf fronter check ok: pure L1 MuSig2+CSV wallet, live CSV sync (blocks:4320), real @arkade-os/swap lockup derivation, unilateral CSV Tapscript recovery, Muun LEND/COLLECT/FulfillFullDebt, hold-broadcast abort & timeout lock safety, broadcast_pending crash reconciler, 5x concurrent claim mutex, maxSats-with-L1-fee, and direct L1 send verified",
     );
   } finally {
     coordinator.close();

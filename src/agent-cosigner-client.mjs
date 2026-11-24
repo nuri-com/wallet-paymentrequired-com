@@ -85,5 +85,7 @@ export function createAgentCosignerClient({
     releaseL1Outpoints: (body, opts) => post("/v1/l1/outpoints/release", body, opts),
     l1OutpointsStatus: (body, opts) => post("/v1/l1/outpoints/status", body, opts),
     registerTrustedL1Outpoint: (body, opts) => post("/v1/l1/outpoints/register-trusted", body, opts),
+    authorizeL1Spend: (body, opts) => post("/v1/l1/authorize-spend", body, opts),
+    releaseL1Spend: (body, opts) => post("/v1/l1/release-spend", body, opts),
   };
 }
