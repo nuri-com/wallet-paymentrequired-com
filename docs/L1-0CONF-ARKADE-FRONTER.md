@@ -64,8 +64,14 @@ Byte-for-byte address derivation was verified against live mainnet `@lennard` (`
 | `FRONTER_L1_SETTLE_FLOOR_SATS` | `5000` | Minimum incoming LN surplus before instant 0-conf L1 settlement |
 | `FRONTER_LEND_MAX_SATS` | `5000` | Maximum outgoing LN send eligible for 0-L1-tx Muun `LEND` |
 | `FRONTER_MAX_DEBT_SATS` | `10000` | Per-wallet cap on unsettled `LEND` debt before `COLLECT` is required |
-| `FRONTER_SERVICE_FEE_BPS` | `0` | Optional basis-point service fee on fronted Lightning payments |
+| `FRONTER_SERVICE_FEE_BPS` | `25` | Basis-point service fee charged on fronted outgoing Lightning payments (e.g. `200` = `2%`) |
+| `FRONTER_RECEIVE_FEE_BPS` | `0` | Basis-point service fee deducted on incoming Lightning payouts/credits (e.g. `200` = `2%`) |
 
-### Health & Loopback Inspection
+### Health, Public Monitor & Loopback Inspection
 - `GET /healthz` exposes `btc_custody_mode`, `l1_0conf_fronter_supported: true`, and `l1_pool_configured` (`true` once `FRONTER_ARKADE_PRIVKEY_HEX` and `FRONTER_L1_PRIVKEY_HEX` / `FRONTER_L1_DEPOSIT_ADDRESS` are configured).
-- Loopback `POST /rpc/tool` (`Bearer $SERVICE_RPC_SECRET`) supports `l1_pool_status` to inspect pool deposit addresses (`ark1...` and `bc1p...`) and balances without exposing private keys.
+- `GET /v1/fronter/status` exposes a 15s-cached public read-only view of `arkadeAddress`, `l1DepositAddress`, `arkadeBalanceSats`, `l1HotBalanceSats`, `totalFloatSats`, `netFloatEquitySats`, `feesConfig`, and `ledgerTotals` (`earnedServiceFeeSats`, `completedOutSwaps`, `completedInSwaps`, `totalDebtSats`, `totalPendingReceiveSats`).
+- Loopback `POST /rpc/tool` (`Bearer $SERVICE_RPC_SECRET`) supports `l1_pool_status` (`helper` tool) for live uncached pool inspection.
+
+## Future Enhancements (Parked)
+- **Overflow Liquidity via SwapKit / BitcoinVN:** When an outgoing or incoming Lightning swap exceeds live Arkade/L1 pool float, route overflow through SwapKit / BitcoinVN so swaps never block on float.
+- **Cooperative L1-Out Fee Output:** Add an optional basis-point fee output (`>= 330` sats P2TR dust floor) to `sendOnchainBtc` co-signed L1 sends while keeping the unilateral Tapscript CSV exit 100% sovereign and fee-free.

@@ -5,6 +5,12 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — 2% bidirectional LN fronter fees, `btc_unconfirmed_sats`, and `GET /v1/fronter/status` (2026-11-24)
+
+- Add `FRONTER_RECEIVE_FEE_BPS` (`receiveFeeBps`, e.g. `200` bps = `2%`) alongside `FRONTER_SERVICE_FEE_BPS`, track `service_fee_sats` per swap in `nuri_l1_fronter_swaps` (`aggregateTotals().earnedServiceFeeSats`, `completedOutSwaps`, `completedInSwaps`), and expose `totalFloatSats`, `netFloatEquitySats`, and `feesConfig` from `getPoolStatus()` (`src/agent-l1-fronter-v2.mjs`).
+- Surface `btc_unconfirmed_sats` in `readDualBalances` when external unconfirmed L1 UTXOs are awaiting 1-confirmation (`src/mcp-wallet-prf-v2.mjs`).
+- Add 15s-cached public read-only `GET /v1/fronter/status` float & fee monitor (`src/wallet-server.mjs`), update `README.md`, `docs/L1-0CONF-ARKADE-FRONTER.md`, `PROMPTLOG.md`, and add TEST 16 in `scripts/check-l1-0conf-fronter.mjs`.
+
 ## Unreleased — Auto-assign default `username@nuriwallet.com` LNURL to every wallet (2026-11-24)
 
 - Automatically provision a deterministic 6-letter pronounceable `<handle>@nuriwallet.com` LNURL Lightning Address (`ensureWalletLnurlHandles`) for every PRF wallet on first `balance` / `receive` if none is registered yet, while prioritizing any later custom `lnurl_username` as primary `lnurl` (`src/mcp-wallet-prf-v2.mjs`).

@@ -1,5 +1,15 @@
 # Prompt log
 
+## 2026-11-24 — Emin; recorded by Antigravity
+
+- **"switch to a muun.com like model where bitcoin is always onchain ... 100% ARKADE on server pool, NOT Spark ... test on paymentrequired.com (nuriwallet.com) without touching nuri.com or arkade.nuri.com"**
+  - Decision: Keep user/agent BTC funds solely in `tr(MuSig2(agent, cosigner), pk(agent) + CSV)` on Bitcoin L1 (`src/agent-l1-fronter-v2.mjs`) and run a single server-side Arkade + L1 liquidity pool (`l1_0conf` mode), leaving consumer `app.nuri.com` and `arkade.nuri.com` 100% untouched. Rejected client-side VTXO wallets (too heavy) and raw un-cosigned 0-conf (RBF-vulnerable).
+  - Live discovery: `nuri-agent-cosigner` on `46.225.135.119:8794` runs `blocks: 4320` (~30d), so `wallet-paymentrequired-com` live-syncs CSV & network from cosigner `/healthz` for byte-identical `bc1p...` addresses; also verified 0-byte divergence vs live mainnet `@lennard` (`app.nuri.com`).
+- **"can we use connected smartcard via cli without extension ... keep skill.md simple/passkey-first ... auto-assign nuriwallet.com LNURL ... keep nuri.com vs nuriwallet.com strictly separate"**
+  - Decision: Built `nuricard connect` CLI over PC/SC + USB-HID (`nuri-com/nuri-passkey-prf-smartcard`) while keeping `/skill.md` dead-simple browser-Passkey-first (`1acfe9e`). Auto-assigned deterministic 6-letter `@nuriwallet.com` LNURLs (`64e8819`) inside `wallet.sqlite` (zero calls to `arkade.nuri.com`) and registered `smartcard@nuriwallet.com`.
+- **"send Lightning to emino@nuri.com (real L1 tx) ... explain Muun 1-sat ... add 2% both ways + monitor endpoint (park SwapKit overflow for later)"**
+  - Live mainnet proof: Sent `1,000` sats to `emino@nuri.com` (`preimage 62efae23...`, L1 tx `e32a6b14...` paying `1,007` sats to pool L1 + `997` sats 0-conf trusted change); received `1,001` sats via `smartcard@nuriwallet.com` (`996` sats net credit).
+  - Decision: Verified Muun `libwallet` (`incoming_swap.go`, `fees/fees.go`) never broadcasts sub-dust 1-sat L1 outputs (`FulfillFullDebt` + `OutputPadding`); added `FRONTER_RECEIVE_FEE_BPS` (`2%` in & out), `earnedServiceFeeSats` tracking, `btc_unconfirmed_sats`, and `GET /v1/fronter/status`. Parked SwapKit/BitcoinVN overflow rebalancing for later.
 
 ## 2026-11-23 — Emin; recorded by Antigravity
 

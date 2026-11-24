@@ -56,7 +56,7 @@ Optional Muun-model custody mode (`src/agent-l1-fronter-v2.mjs`) where user/agen
 
 - **Live cosigner sync:** syncs `nuri_server_csv` (e.g. `blocks: 4320` on `46.225.135.119`) and `l1_network` from `nuri-agent-cosigner /healthz` so `bc1p...` addresses always match byte-for-byte.
 - **Zero-fee failure & tiny sends:** hold-broadcast anti-RBF locks outpoints at `nuri-agent-cosigner` until LN preimage (0 L1 fee on failure), paired with Muun-style `LEND` (`<= FRONTER_LEND_MAX_SATS`), `COLLECT`, `FulfillFullDebt`, and `FRONTER_L1_SETTLE_FLOOR_SATS` auto-sweep.
-- **Activation & inspection:** configure `FRONTER_ARKADE_PRIVKEY_HEX` + `FRONTER_L1_PRIVKEY_HEX`, check pool addresses/balances via loopback `POST /rpc/tool` (`l1_pool_status`) and `GET /healthz` (`l1_0conf_fronter_supported`, `l1_pool_configured`), then set `AGENT_BTC_CUSTODY_MODE=l1_0conf`.
+- **Activation & inspection:** configure `FRONTER_ARKADE_PRIVKEY_HEX` + `FRONTER_L1_PRIVKEY_HEX` (and optional `FRONTER_SERVICE_FEE_BPS` / `FRONTER_RECEIVE_FEE_BPS`, e.g. `200` bps = `2%`), check pool float, fees & revenue live at `GET /v1/fronter/status` or loopback `POST /rpc/tool` (`l1_pool_status`) + `GET /healthz`, then set `AGENT_BTC_CUSTODY_MODE=l1_0conf`.
 - **Full findings, SDK fixes & `app.nuri.com` (`nuri-expo`) proof:** see [`docs/L1-0CONF-ARKADE-FRONTER.md`](docs/L1-0CONF-ARKADE-FRONTER.md).
 
 ## Ask AI from the agent wallet
@@ -92,6 +92,7 @@ on GitHub-hosted runners; no live payment or deployment is part of the checks.
 | `POST /mcp`: `initialize`, `tools/list` (= `wallet`), `tools/call` | `src/wallet-server.mjs:257-301` |
 | `POST /rpc/tool` (loopback, bearer `SERVICE_RPC_SECRET`) | `src/service-rpc.mjs:21-45`, `src/wallet-server.mjs:120-154` |
 | `GET /healthz` | `src/wallet-server.mjs:173-176` |
+| `GET /v1/fronter/status` (15s cached public float & fee monitor) | `src/wallet-server.mjs` |
 | `GET /` role page | `src/service-index.mjs:6-10` |
 | `GET /bridge/privy`, `/bridge/privy/wirex`, `/bridge/privy.js` | `src/wallet-server.mjs:178-187` |
 | `/api/browser-sessions/<id>[/approval\|/callback\|/connection]`, `/pending` | `src/wallet-server.mjs:188-234` |

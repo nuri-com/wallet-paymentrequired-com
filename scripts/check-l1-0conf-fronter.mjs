@@ -707,8 +707,92 @@ async function main() {
       );
     }
 
+    // TEST 16: 2% bidirectional service fees (`receiveFeeBps: 200`, `sendFeeBps: 200`), revenue totals, float equity & unconfirmed external UTXO reporting
+    {
+      const feePool = {
+        ...serverPool,
+        async getPoolStatus() {
+          return {
+            configured: true,
+            l1DepositAddress: poolL1P2tr.address,
+            l1HotAddress: poolL1P2tr.address,
+            l1HotBalanceSats: 50_000,
+            arkadeAddress: "ark1testpoolfee",
+            arkadeBalanceSats: 50_000,
+          };
+        },
+        async quoteLightningSend({ bolt11 }) {
+          const m = /^lnbc(\d+)n/.exec(bolt11);
+          const invoiceAmountSats = Number(BigInt(m[1]) / 10n);
+          const lnFeeSats = 10;
+          const serviceFeeSats = Math.ceil((invoiceAmountSats * 200) / 10_000);
+          return {
+            rfqId: randomBytes(16).toString("hex"),
+            invoiceAmountSats,
+            lnFeeSats,
+            serviceFeeSats,
+            totalCostSats: invoiceAmountSats + lnFeeSats + serviceFeeSats,
+          };
+        },
+      };
+      const feeRuntime = createAgentL1FronterRuntime({
+        cosignerClient,
+        ledgerPath: ":memory:",
+        esploraClient: esplora,
+        serverPool: feePool,
+        network: "bitcoin",
+        lendMaxSats: 500,
+        maxDebtSats: 10_000,
+        l1SettleFloorSats: 1_000,
+        sendFeeBps: 200,
+        receiveFeeBps: 200,
+      });
+      try {
+        // Isolate UTXOs for TEST 16: 1 external unconfirmed UTXO + 1 confirmed UTXO on user L1 address
+        utxosByAddress.set(l1Wallet.address, [
+          { txid: "ee".repeat(32), vout: 0, value: 1_234, confirmed: false },
+          { txid: "ef".repeat(32), vout: 0, value: 25_000, confirmed: true },
+        ]);
+        const balWithExt = await feeRuntime.readBalance(walletRecord);
+        assert.equal(balWithExt.onchainUnconfirmedExternalSats, 1_234n);
+
+        // Inbound 10,000-sat LN claim -> 2% (200 sats) deducted -> 9,800 credited -> L1 payout
+        const rfqIn = await feeRuntime.createLightningReceive({ walletRecord, amountSats: 10_000 });
+        incomingPaidMap.set(rfqIn.rfqId, 10_000);
+        const claimedIn = await feeRuntime.claimLightningReceive({
+          walletRecord,
+          receiveRecord: { ...rfqIn, expectedAmountSats: 10_000 },
+        });
+        assert.equal(claimedIn.grossClaimedSats, 10_000);
+        assert.equal(claimedIn.serviceFeeSats, 200);
+        assert.equal(claimedIn.claimedSats, 9_800);
+
+        // Outbound 6,000-sat LN pay -> 2% (120 sats) tracked
+        const invOutFee = makeBolt11({ amountSats: 6_000, preimageHex: "09".repeat(32) });
+        invoicePreimages.set(invOutFee.bolt11, invOutFee.preimageHex);
+        const paidOut = await feeRuntime.payBolt11Invoice({
+          walletRecord,
+          agentBtcPrivHex: bytesToHex(agentPriv),
+          bolt11: invOutFee.bolt11,
+          opId: "op-2pct-out",
+        });
+        assert.equal(paidOut.status, "done");
+
+        const poolStat = await feeRuntime.getPoolStatus();
+        assert.equal(poolStat.feesConfig.sendFeeBps, 200);
+        assert.equal(poolStat.feesConfig.receiveFeeBps, 200);
+        assert.equal(poolStat.ledgerTotals.earnedServiceFeeSats, 320);
+        assert.equal(poolStat.ledgerTotals.completedOutSwaps, 1);
+        assert.equal(poolStat.ledgerTotals.completedInSwaps, 1);
+        assert.equal(poolStat.totalFloatSats, 100_000);
+        assert.equal(poolStat.netFloatEquitySats, 100_000);
+      } finally {
+        feeRuntime.close();
+      }
+    }
+
     console.log(
-      "l1 0-conf fronter check ok: pure L1 MuSig2+CSV wallet, live CSV sync (blocks:4320), real @arkade-os/swap lockup derivation, unilateral CSV Tapscript recovery, Muun LEND/COLLECT/FulfillFullDebt, hold-broadcast abort & timeout lock safety, broadcast_pending crash reconciler, 5x concurrent claim mutex, maxSats-with-L1-fee, and direct L1 send verified",
+      "l1 0-conf fronter check ok: pure L1 MuSig2+CSV wallet, live CSV sync (blocks:4320), real @arkade-os/swap lockup derivation, unilateral CSV Tapscript recovery, Muun LEND/COLLECT/FulfillFullDebt, hold-broadcast abort & timeout lock safety, broadcast_pending crash reconciler, 5x concurrent claim mutex, maxSats-with-L1-fee, 2% bidirectional fees + float equity monitor, and direct L1 send verified",
     );
   } finally {
     coordinator.close();

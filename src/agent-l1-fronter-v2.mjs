@@ -550,6 +550,7 @@ export function openL1FronterLedger(dbPath = ":memory:") {
       bolt11 TEXT,
       amount_sats INTEGER NOT NULL,
       fee_sats INTEGER NOT NULL DEFAULT 0,
+      service_fee_sats INTEGER NOT NULL DEFAULT 0,
       debt_delta_sats INTEGER NOT NULL DEFAULT 0,
       l1_txid TEXT,
       l1_raw_hex TEXT,
@@ -595,6 +596,7 @@ export function openL1FronterLedger(dbPath = ":memory:") {
     ["nuri_l1_fronter_swaps", "change_outpoints_json", "TEXT"],
     ["nuri_l1_fronter_swaps", "credit_used_sats", "INTEGER NOT NULL DEFAULT 0"],
     ["nuri_l1_fronter_swaps", "output_padding_sats", "INTEGER NOT NULL DEFAULT 0"],
+    ["nuri_l1_fronter_swaps", "service_fee_sats", "INTEGER NOT NULL DEFAULT 0"],
     ["nuri_l1_trusted_utxos", "ancestor_depth", "INTEGER NOT NULL DEFAULT 1"],
   ]) {
     try {
@@ -658,10 +660,10 @@ export function openL1FronterLedger(dbPath = ":memory:") {
       .prepare(`
         INSERT INTO nuri_l1_fronter_swaps (
           op_id, wallet_id, direction, mode, status, payment_hash, preimage_hex, bolt11,
-          amount_sats, fee_sats, debt_delta_sats, l1_txid, l1_raw_hex,
+          amount_sats, fee_sats, service_fee_sats, debt_delta_sats, l1_txid, l1_raw_hex,
           swap_pk_script_hex, ark_txid, spent_outpoints_json, change_outpoints_json,
           credit_used_sats, output_padding_sats, error, created_at_ms, updated_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(op_id) DO NOTHING
       `)
       .run(
@@ -675,6 +677,7 @@ export function openL1FronterLedger(dbPath = ":memory:") {
         row.bolt11 ?? null,
         Math.trunc(Number(row.amountSats || 0)),
         Math.trunc(Number(row.feeSats || 0)),
+        Math.trunc(Number(row.serviceFeeSats || 0)),
         Math.trunc(Number(row.debtDeltaSats || 0)),
         row.l1Txid ?? null,
         row.l1RawHex ?? null,
@@ -696,15 +699,16 @@ export function openL1FronterLedger(dbPath = ":memory:") {
     db.prepare(`
       INSERT INTO nuri_l1_fronter_swaps (
         op_id, wallet_id, direction, mode, status, payment_hash, preimage_hex, bolt11,
-        amount_sats, fee_sats, debt_delta_sats, l1_txid, l1_raw_hex,
+        amount_sats, fee_sats, service_fee_sats, debt_delta_sats, l1_txid, l1_raw_hex,
         swap_pk_script_hex, ark_txid, spent_outpoints_json, change_outpoints_json,
         credit_used_sats, output_padding_sats, error, created_at_ms, updated_at_ms
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(op_id) DO UPDATE SET
         mode = excluded.mode,
         status = excluded.status,
         preimage_hex = COALESCE(excluded.preimage_hex, nuri_l1_fronter_swaps.preimage_hex),
         fee_sats = excluded.fee_sats,
+        service_fee_sats = excluded.service_fee_sats,
         debt_delta_sats = excluded.debt_delta_sats,
         l1_txid = COALESCE(excluded.l1_txid, nuri_l1_fronter_swaps.l1_txid),
         l1_raw_hex = COALESCE(excluded.l1_raw_hex, nuri_l1_fronter_swaps.l1_raw_hex),
@@ -727,6 +731,7 @@ export function openL1FronterLedger(dbPath = ":memory:") {
       row.bolt11 ?? null,
       Math.trunc(Number(row.amountSats || 0)),
       Math.trunc(Number(row.feeSats || 0)),
+      Math.trunc(Number(row.serviceFeeSats || 0)),
       Math.trunc(Number(row.debtDeltaSats || 0)),
       row.l1Txid ?? null,
       row.l1RawHex ?? null,
@@ -837,11 +842,23 @@ export function openL1FronterLedger(dbPath = ":memory:") {
     const pendingBroadcasts = db
       .prepare("SELECT COUNT(*) AS n FROM nuri_l1_fronter_swaps WHERE status = 'broadcast_pending'")
       .get();
+    const swapStats = db
+      .prepare(`
+        SELECT COALESCE(SUM(service_fee_sats), 0) AS earned_fees,
+               COALESCE(SUM(CASE WHEN direction = 'out' THEN 1 ELSE 0 END), 0) AS out_count,
+               COALESCE(SUM(CASE WHEN direction = 'in' THEN 1 ELSE 0 END), 0) AS in_count
+        FROM nuri_l1_fronter_swaps
+        WHERE status = 'done'
+      `)
+      .get();
     return {
       wallets: Number(row?.wallets || 0),
       totalDebtSats: Number(row?.total_debt || 0),
       totalPendingReceiveSats: Number(row?.total_pending || 0),
       pendingL1Broadcasts: Number(pendingBroadcasts?.n || 0),
+      earnedServiceFeeSats: Number(swapStats?.earned_fees || 0),
+      completedOutSwaps: Number(swapStats?.out_count || 0),
+      completedInSwaps: Number(swapStats?.in_count || 0),
     };
   }
 
@@ -1477,6 +1494,8 @@ export function createAgentL1FronterRuntime({
   lendMaxSats = Number(env.FRONTER_LEND_MAX_SATS ?? DEFAULT_LEND_MAX_SATS),
   maxDebtSats = Number(env.FRONTER_MAX_DEBT_SATS ?? DEFAULT_MAX_DEBT_SATS),
   l1SettleFloorSats = Number(env.FRONTER_L1_SETTLE_FLOOR_SATS ?? DEFAULT_L1_SETTLE_FLOOR_SATS),
+  sendFeeBps = Number(env.FRONTER_SERVICE_FEE_BPS ?? 25),
+  receiveFeeBps = Number(env.FRONTER_RECEIVE_FEE_BPS ?? 0),
 } = {}) {
   const defaultNet = normalizeBitcoinNetwork(network);
   const esplora =
@@ -1684,6 +1703,7 @@ export function createAgentL1FronterRuntime({
           bolt11: row.bolt11,
           amountSats: row.amount_sats,
           feeSats: row.fee_sats,
+          serviceFeeSats: row.service_fee_sats,
           debtDeltaSats: row.debt_delta_sats,
           l1Txid: finalTxid,
           l1RawHex: row.l1_raw_hex,
@@ -1988,6 +2008,7 @@ export function createAgentL1FronterRuntime({
             bolt11: cleanInvoice,
             amountSats: facts.amountSats,
             feeSats: quoteCtx.lnFeeSats + quoteCtx.serviceFeeSats,
+            serviceFeeSats: Number(quoteCtx.serviceFeeSats || 0),
             creditUsedSats: creditUsed,
           });
         });
@@ -2007,6 +2028,7 @@ export function createAgentL1FronterRuntime({
             bolt11: cleanInvoice,
             amountSats: facts.amountSats,
             feeSats: quoteCtx.lnFeeSats + quoteCtx.serviceFeeSats,
+            serviceFeeSats: Number(quoteCtx.serviceFeeSats || 0),
             creditUsedSats: creditUsed,
           });
           return {
@@ -2097,6 +2119,7 @@ export function createAgentL1FronterRuntime({
               bolt11: cleanInvoice,
               amountSats: facts.amountSats,
               feeSats: quoteCtx.lnFeeSats + quoteCtx.serviceFeeSats,
+              serviceFeeSats: Number(quoteCtx.serviceFeeSats || 0),
               debtDeltaSats: neededAfterCredit,
               creditUsedSats: creditUsed,
             });
@@ -2117,6 +2140,7 @@ export function createAgentL1FronterRuntime({
               bolt11: cleanInvoice,
               amountSats: facts.amountSats,
               feeSats: quoteCtx.lnFeeSats + quoteCtx.serviceFeeSats,
+              serviceFeeSats: Number(quoteCtx.serviceFeeSats || 0),
               debtDeltaSats: neededAfterCredit,
               creditUsedSats: creditUsed,
               arkTxid: paid.arkTxid || null,
@@ -2198,6 +2222,7 @@ export function createAgentL1FronterRuntime({
         bolt11: cleanInvoice,
         amountSats: facts.amountSats,
         feeSats: totalFeeSats,
+        serviceFeeSats: Number(quoteCtx.serviceFeeSats || 0),
         debtDeltaSats: -ledgerState.debtSats,
         l1Txid: signedL1.txid,
         l1RawHex: signedL1.rawHex,
@@ -2277,6 +2302,7 @@ export function createAgentL1FronterRuntime({
         bolt11: cleanInvoice,
         amountSats: facts.amountSats,
         feeSats: totalFeeSats,
+        serviceFeeSats: Number(quoteCtx.serviceFeeSats || 0),
         debtDeltaSats: -ledgerState.debtSats,
         l1Txid: signedL1.txid,
         l1RawHex: signedL1.rawHex,
@@ -2382,10 +2408,15 @@ export function createAgentL1FronterRuntime({
 
       const l1 = await deriveWalletScript(walletRecord);
       const ledgerState = store.getLedger(walletRecord.walletId);
+      const receiveServiceFeeSats =
+        receiveFeeBps > 0
+          ? Math.min(Math.max(0, netReceivedSats - 1), Math.ceil((netReceivedSats * receiveFeeBps) / 10_000))
+          : 0;
+      const creditedSats = netReceivedSats - receiveServiceFeeSats;
 
       // Step 1: Muun `FulfillFullDebt` — cancel user's LEND debt first with ZERO L1 tx!
-      const debtCanceled = Math.min(ledgerState.debtSats, netReceivedSats);
-      const remainingAfterDebt = netReceivedSats - debtCanceled;
+      const debtCanceled = Math.min(ledgerState.debtSats, creditedSats);
+      const remainingAfterDebt = creditedSats - debtCanceled;
       const newDebt = ledgerState.debtSats - debtCanceled;
       const poolForL1 = ledgerState.pendingReceiveSats + remainingAfterDebt;
 
@@ -2424,8 +2455,9 @@ export function createAgentL1FronterRuntime({
             mode,
             status: "done",
             paymentHash: receiveRecord.paymentHash || null,
-            amountSats: netReceivedSats,
-            feeSats: payout.feeSats,
+            amountSats: creditedSats,
+            feeSats: payout.feeSats + receiveServiceFeeSats,
+            serviceFeeSats: receiveServiceFeeSats,
             debtDeltaSats: -debtCanceled,
             l1Txid: payout.txid,
           });
@@ -2449,7 +2481,9 @@ export function createAgentL1FronterRuntime({
         return {
           status: "claimed",
           claimTxid: payout.txid,
-          claimedSats: netReceivedSats,
+          grossClaimedSats: netReceivedSats,
+          claimedSats: creditedSats,
+          serviceFeeSats: receiveServiceFeeSats,
           l1PayoutSats: payout.payoutSats,
           l1FeeSats: payout.feeSats,
           debtCanceledSats: debtCanceled,
@@ -2477,8 +2511,9 @@ export function createAgentL1FronterRuntime({
           mode,
           status: "done",
           paymentHash: receiveRecord.paymentHash || null,
-          amountSats: netReceivedSats,
-          feeSats: 0,
+          amountSats: creditedSats,
+          feeSats: receiveServiceFeeSats,
+          serviceFeeSats: receiveServiceFeeSats,
           debtDeltaSats: -debtCanceled,
           l1Txid: null,
         });
@@ -2486,7 +2521,9 @@ export function createAgentL1FronterRuntime({
       return {
         status: "claimed",
         claimTxid: null,
-        claimedSats: netReceivedSats,
+        grossClaimedSats: netReceivedSats,
+        claimedSats: creditedSats,
+        serviceFeeSats: receiveServiceFeeSats,
         debtCanceledSats: debtCanceled,
         pendingReceiveSats: poolForL1,
         settlementMode: mode,
@@ -2631,6 +2668,7 @@ export function createAgentL1FronterRuntime({
             bolt11: row.bolt11,
             amountSats: row.amount_sats,
             feeSats: row.fee_sats,
+            serviceFeeSats: row.service_fee_sats,
             debtDeltaSats: row.debt_delta_sats,
             l1Txid: row.l1_txid,
             l1RawHex: row.l1_raw_hex,
@@ -2652,11 +2690,28 @@ export function createAgentL1FronterRuntime({
   async function getPoolStatus() {
     const poolInfo = typeof pool.getPoolStatus === "function" ? await pool.getPoolStatus() : { configured: Boolean(pool.configured) };
     const { csv, net } = await resolveL1Config();
+    const ledgerTotals = store.aggregateTotals();
+    const arkBal = poolInfo.arkadeBalanceSats !== undefined && poolInfo.arkadeBalanceSats !== null ? Number(poolInfo.arkadeBalanceSats) : null;
+    const l1Bal = poolInfo.l1HotBalanceSats !== undefined && poolInfo.l1HotBalanceSats !== null ? Number(poolInfo.l1HotBalanceSats) : null;
+    const totalFloatSats = arkBal !== null && l1Bal !== null ? arkBal + l1Bal : null;
+    const netFloatEquitySats =
+      totalFloatSats !== null
+        ? totalFloatSats + ledgerTotals.totalDebtSats - ledgerTotals.totalPendingReceiveSats
+        : null;
     return {
       ...poolInfo,
       network: net,
       nuriServerCsv: csv,
-      ledgerTotals: store.aggregateTotals(),
+      totalFloatSats,
+      netFloatEquitySats,
+      feesConfig: {
+        sendFeeBps,
+        receiveFeeBps,
+        lendMaxSats,
+        l1SettleFloorSats,
+        maxDebtSats,
+      },
+      ledgerTotals,
     };
   }
 

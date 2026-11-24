@@ -965,6 +965,9 @@ export function createPrfWalletCoordinator({
             ...(arkadeState.pendingReceiveSats
               ? { btc_pending_l1_sweep_sats: arkadeState.pendingReceiveSats }
               : {}),
+            ...(arkadeState.onchainUnconfirmedExternalSats
+              ? { btc_unconfirmed_sats: Number(arkadeState.onchainUnconfirmedExternalSats) }
+              : {}),
           }
         : arkadeState.address
           ? { arkade_address: arkadeState.address }

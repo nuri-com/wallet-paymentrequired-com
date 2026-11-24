@@ -180,6 +180,9 @@ const REST_ACTION_ROUTES = new Map([
   ["/v1/history", "history"],
 ]);
 const pendingApprovalLimiter = createKycCapabilityLimiter();
+const FRONTER_STATUS_CACHE_TTL_MS = 15_000;
+let cachedFronterStatus = null;
+let cachedFronterStatusAt = 0;
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -197,6 +200,25 @@ const server = http.createServer(async (req, res) => {
         tools: mcpTools.map((tool) => tool.name), service_mode: SERVICE.mode, public_base: browserBridge.publicBase, aa_rpc: aaConfig.bundlerUrl,
         btc_custody_mode: String(process.env.AGENT_BTC_CUSTODY_MODE || "arkade").trim().toLowerCase(), l1_0conf_fronter_supported: true,
         l1_pool_configured: Boolean(process.env.FRONTER_ARKADE_PRIVKEY_HEX && (process.env.FRONTER_L1_DEPOSIT_ADDRESS || process.env.FRONTER_L1_PRIVKEY_HEX || process.env.FRONTER_ARKADE_PRIVKEY_HEX)) });
+    }
+    if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/v1/fronter/status") {
+      const custodyMode = String(process.env.AGENT_BTC_CUSTODY_MODE || "arkade").trim().toLowerCase();
+      if (custodyMode !== "l1_0conf") {
+        return writeJson(req, res, 200, { ok: true, btc_custody_mode: custodyMode, enabled: false });
+      }
+      const now = Date.now();
+      if (!cachedFronterStatus || now - cachedFronterStatusAt > FRONTER_STATUS_CACHE_TTL_MS) {
+        const status = await walletLocal.l1PoolStatus();
+        cachedFronterStatus = {
+          ok: true,
+          btc_custody_mode: "l1_0conf",
+          enabled: true,
+          cached_at: new Date(now).toISOString(),
+          ...status,
+        };
+        cachedFronterStatusAt = now;
+      }
+      return writeJson(req, res, 200, cachedFronterStatus);
     }
     if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/") {
       const origin = resolveWalletOrigin(req);
