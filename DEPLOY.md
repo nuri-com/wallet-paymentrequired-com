@@ -4,7 +4,7 @@
 flowchart LR
   G[reviewed commit] --> I[docker build -t paymentrequired-wallet:SHA]
   I --> C[container nuri-wallet<br/>network host, 127.0.0.1:8798]
-  C --> H[/healthz git_sha, service_mode=wallet, tools=[wallet]/]
+  C --> H["/healthz (git_sha, service_mode=wallet, tools=wallet)"]
   N[nginx wallet.paymentrequired.com] --> C
 ```
 

@@ -9,6 +9,7 @@ flowchart LR
 
 - Make `service-index.mjs`, `wallet-server.mjs`, `mcp-instructions.mjs`, `mcp-wallet-tool.mjs`, `mcp-wallet-prf-v2.mjs`, and `agent-lightning-pay.mjs` mode-aware for `AGENT_BTC_CUSTODY_MODE=l1_0conf`: remove stale `ark1...` / Arkade custody copy on `wallet.nuri.com`, `nuriwallet.com`, `agent.nuri.com`, and `wallet.paymentrequired.com` (`/`, `/llms.txt`, `/skill.md`, `/openapi.json`, MCP `initialize` + `WALLET_TOOL`), add `"btc"` to `WALLET_TOOL.inputSchema.properties.rail.enum`, align `outputSchema`, remove unaccepted `headers` from `/openapi.json`, raise LN widget/OpenAPI min sats to `340`, remove unsupported `discover` hint from `public/services.json`, and display `btc_address` (`bc1p...`) + `lnurl` in the browser setup widget.
 - Fix `undefined feeBuffer` -> `estOverhead` in `payBolt11WithCrossRail` (`src/mcp-wallet-prf-v2.mjs`), include `FRONTER_RECEIVE_FEE_BPS` in `createLightningReceive` quote totals (`src/agent-l1-fronter-v2.mjs`), add `l1_0conf` UI/OpenAPI assertions in `scripts/check-cross-rail-v2.mjs`, complete `.env.example` with `FRONTER_*` & `AGENT_BTC_CUSTODY_MODE`, and update `README.md` (`41`-swap count) & `docs/L1-0CONF-ARKADE-FRONTER.md`.
+- Fix `DEPLOY.md` Mermaid `flowchart` syntax (`H["/healthz ..."]`) so GitHub renders it cleanly (`mermaid.parse()` verified).
 
 ## Unreleased — Doc accuracy scrub & live 4-hop mainnet E2E against 100% Rust cosigner (2026-11-25)
 
