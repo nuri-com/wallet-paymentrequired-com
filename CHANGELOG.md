@@ -5,6 +5,10 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — `nuri-btc-cosigner-v4` non-hardened BIP32 BTC derivation docs (2026-11-25)
+
+- Update `docs/AGENT-DERIVATION-SPEC.md`, `docs/L1-0CONF-ARKADE-FRONTER.md`, `docs/CUSTODY-EVOLUTION.md`, and `README.md` to document canonical **non-hardened BIP32 (`nuri-btc-cosigner-v4`)** Bitcoin cosigner derivation (exact parity with `arkade.nuri.com` / `nuri-signing`, publishing `(account_public_key, account_chain_code, account_fingerprint)` on `/healthz` and `/v1/btc/account` for single-passkey offline Taproot CSV Control Block recovery), automatic read/sign backward compatibility for pre-existing `nuri-agent-btc-cosigner-v1` grants, and unchanged hardened `HMAC-SHA512` (`nuri-agent-evm-cosigner-v1`) EVM Safe derivation.
+
 ## Unreleased — `wallet.nuri.com` `l1_0conf`-aware UI/llms/OpenAPI/MCP & fee/runtime fixes (2026-11-25)
 
 - Make `service-index.mjs`, `wallet-server.mjs`, `mcp-instructions.mjs`, `mcp-wallet-tool.mjs`, `mcp-wallet-prf-v2.mjs`, and `agent-lightning-pay.mjs` mode-aware for `AGENT_BTC_CUSTODY_MODE=l1_0conf`: remove stale `ark1...` / Arkade custody copy on `wallet.nuri.com`, `nuriwallet.com`, `agent.nuri.com`, and `wallet.paymentrequired.com` (`/`, `/llms.txt`, `/skill.md`, `/openapi.json`, MCP `initialize` + `WALLET_TOOL`), add `"btc"` to `WALLET_TOOL.inputSchema.properties.rail.enum`, align `outputSchema`, remove unaccepted `headers` from `/openapi.json`, raise LN widget/OpenAPI min sats to `340`, remove unsupported `discover` hint from `public/services.json`, and display `btc_address` (`bc1p...`) + `lnurl` in the browser setup widget.

@@ -77,11 +77,62 @@ Evaluating the exact same WebAuthn `first` salt lets a single FaceID / TouchID t
 
 ## 4. Deterministic Cosigner Shares (`nuri-agent-cosigner`)
 
-For each `(cred_id_b64u, index)` grant, `nuri-agent-cosigner` (`127.0.0.1:8794`) deterministically derives its EVM and BTC co-signing scalars from two separate 32-byte seeds via **HMAC-SHA512** (taking the first 32 bytes, iterating `counter = 0..255` until valid non-zero scalar `< n`; `rust/src/evm_derive.rs`, `rust/src/derive.rs`):
+`nuri-agent-cosigner` (`127.0.0.1:8794`) derives its BTC and EVM co-signing scalars deterministically from two separate 32-byte root seeds (`AGENT_BTC_COSIGNER_SEED_HEX` and `AGENT_EVM_COSIGNER_SEED_HEX`; `rust/src/derive.rs`, `rust/src/evm_derive.rs`).
+
+### 4.1 Bitcoin Cosigner Key — Canonical Non-Hardened BIP32 (`nuri-btc-cosigner-v4`)
+
+All **new** wallets and grant slots derive the BTC cosigner key via **non-hardened BIP32** (`nuri-btc-cosigner-v4`), maintaining byte-for-byte parity with `arkade.nuri.com` / `nuri-signing`:
+
+```text
+# 1. Cosigner account extended key from 32-byte AGENT_BTC_COSIGNER_SEED_HEX
+I                   = HMAC-SHA512(key = UTF8("nuri:btc-cosigner-v4:account"), data = seed_bytes)
+d_acc               = (uint256_be(I[0..32]) mod (n - 1)) + 1     // secp256k1 curve order n
+account_public_key  = d_acc * G                                  // 33-byte compressed pubkey
+account_chain_code  = I[32..64]                                  // 32-byte BIP32 chain code
+account_fingerprint = hex(SHA-256(account_public_key || account_chain_code))[0..16]
+
+# 2. Deterministic 4-level non-hardened BIP32 child path from lowercase client_pk33_hex
+wallet_id           = SHA-256(UTF8("nuri-btc-cosigner-v4|" + client_pk33_hex))
+i0                  = uint32_be(wallet_id[0..4])   & 0x7fffffff
+i1                  = uint32_be(wallet_id[4..8])   & 0x7fffffff
+i2                  = uint32_be(wallet_id[8..12])  & 0x7fffffff
+i3                  = uint32_be(wallet_id[12..16]) & 0x7fffffff
+path                = m/i0/i1/i2/i3                              // 4 non-hardened BIP32 hops
+
+# 3. Standard BIP32 CKDpriv (server) / CKDpub (offline client recovery)
+btc_sk              = CKDpriv((d_acc, account_chain_code), m/i0/i1/i2/i3)
+cosigner_btc_pk33   = CKDpub((account_public_key, account_chain_code), m/i0/i1/i2/i3)
+```
+
+`nuri-agent-cosigner` publishes `(account_public_key, account_chain_code, account_fingerprint)` openly on both `GET /healthz` and `GET /v1/btc/account`. Because this is public xpub material (never secret signing material), recovery tooling and public mirrors can archive it safely.
+
+#### Why Non-Hardened BIP32 Is Intentional (Single-Passkey Self-Custody)
+
+In a Taproot 2-of-2 + CSV output (`tr(MuSig2(client_pk, server_pk), pk(client_pk) + older(nuriServerCsv))` or the 3-leaf Arkade VTXO tree), spending the unilateral CSV decay leaf **still requires the Taproot Control Block**, which commits to `internal_key = MuSig2(client_pk, server_pk)`:
+
+- With **non-hardened BIP32 (`nuri-btc-cosigner-v4`)**, a user who has **only their Nuri Passkey** (and the publicly archived `(account_public_key, account_chain_code)`) can deterministically reconstruct `client_pk` -> `m/i0/i1/i2/i3` -> `server_pk` -> `internal_key` -> Taproot CSV Control Block **100% offline** if Nuri disappears — with zero extra per-wallet backup.
+- With **hardened HMAC derivation** (`nuri-agent-btc-cosigner-v1`), `server_pk` cannot be derived from public account data alone; every user would need to preserve a separate out-of-band 32-byte `server_pk` / output-descriptor backup just to execute unilateral CSV recovery if the server vanished.
+- Tradeoff & roadmap: non-hardened BIP32 requires keeping all derived child private keys strictly inside the isolated `nuri-agent-cosigner` boundary (leaking a child private key alongside `account_chain_code` would expose `d_acc`). This tradeoff is deliberate for zero-backup single-passkey 2-of-2+CSV custody; a future 2-of-3 architecture with a dedicated hardware wallet can revisit hardened derivation.
+
+### 4.2 Legacy Bitcoin Cosigner Key — Backward-Compatible Pinned Grants (`nuri-agent-btc-cosigner-v1`)
+
+Pre-existing grants pinned to `nuri-agent-btc-cosigner-v1` retain automatic **read/sign backward compatibility** so zero existing wallets lose access or change addresses. Legacy grants derive their BTC scalar via hardened **HMAC-SHA512** (iterating `counter = 0..255` until valid non-zero scalar `< n`):
+
+```text
+btc_sk_legacy = HMAC-SHA512(
+  AGENT_BTC_COSIGNER_SEED_HEX,
+  UTF8("nuri-agent-btc-cosigner-v1|" + cred_id_b64u + "|" + index + "|" + client_pk33_hex + "|" + counter)
+)[0..32]
+```
+
+New wallets and grant slots **never** use `nuri-agent-btc-cosigner-v1`.
+
+### 4.3 EVM Safe Cosigner Key — Hardened HMAC-SHA512 (`nuri-agent-evm-cosigner-v1`)
+
+EVM Safe co-signing keys remain derived via **hardened HMAC-SHA512** (taking the first 32 bytes, iterating `counter = 0..255` until valid non-zero scalar `< n`; `rust/src/evm_derive.rs`), because Base 2-of-4 Safe recovery uses `[main_eoa, passkey_signer_address]` directly on-chain and does not require offline reconstruction of `cosigner_eoa`:
 
 ```text
 evm_sk = HMAC-SHA512(AGENT_EVM_COSIGNER_SEED_HEX, UTF8("nuri-agent-evm-cosigner-v1|" + cred_id_b64u + "|" + index + "|" + counter))[0..32]
-btc_sk = HMAC-SHA512(AGENT_BTC_COSIGNER_SEED_HEX, UTF8("nuri-agent-btc-cosigner-v1|" + cred_id_b64u + "|" + index + "|" + client_pk33_hex + "|" + counter))[0..32]
 ```
 
 ---

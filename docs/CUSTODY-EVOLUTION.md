@@ -81,7 +81,7 @@ flowchart TB
 | Lightning swap engine | None | `@arkade-os/swap` RFQ/VHTLC over Nostr (`wss://nostr.arkade.sh`) — **zero Boltz** |
 
 ### 2.2 Policy Co-Signing Without Custodial Lock-In
-`nuri-agent-cosigner` (`127.0.0.1:8794`) holds deterministic per-grant cosigner keys derived via **HMAC-SHA512** from two separate 32-byte root seeds (`AGENT_EVM_COSIGNER_SEED_HEX` bound to `(cred_id_b64u, slot_index)`, and `AGENT_BTC_COSIGNER_SEED_HEX` bound to `(cred_id_b64u, slot_index, agent_btc_pk33)`):
+`nuri-agent-cosigner` (`127.0.0.1:8794`) holds deterministic per-grant cosigner keys derived from two separate 32-byte root seeds: **hardened HMAC-SHA512** for EVM (`nuri-agent-evm-cosigner-v1`, `AGENT_EVM_COSIGNER_SEED_HEX` bound to `(cred_id_b64u, slot_index)`), and **non-hardened BIP32** for Bitcoin (`nuri-btc-cosigner-v4`, `AGENT_BTC_COSIGNER_SEED_HEX` -> child path `m/i0/i1/i2/i3` from `SHA-256("nuri-btc-cosigner-v4|" + agent_btc_pk33)`, matching `arkade.nuri.com` / `nuri-signing`, with automatic read/sign backward compatibility for pre-existing `nuri-agent-btc-cosigner-v1` grants):
 1. **Normal agent operation**: `wallet.paymentrequired.com` signs with the Agent child key and requests a policy-checked co-signature from `nuri-agent-cosigner` (`Agent + Cosigner = 2-of-4` on Base Safe; `MuSig2(Agent, Cosigner)` on Arkade or Pure-L1).
 2. **Independent policy enforcement**: `nuri-agent-cosigner` decodes Safe transactions, EIP-3009 / Permit2 / BurnIntent typed data, and Arkade / L1 PSBTs + VHTLC scripts independently, enforcing per-tx and daily USDC/sats caps before co-signing.
 3. **Zero lock-in**:

@@ -10,7 +10,7 @@ Running a per-user Arkade VTXO wallet on every client forces every wallet to man
   `tr(MuSig2(agent, cosigner), and_v(v:pk(agent), older(nuriServerCsv)))`
 - **A single server-side Arkade + L1 liquidity pool** (`createServerArkadeLiquidityPool`) handles all Lightning BOLT11 / LNURL-pay / L402 / Lightning MPP sends & receives via Arkade Intents RFQ.
 - **Anti-RBF at 0-conf:** Because normal L1 spends require `nuri-agent-cosigner` (`2-of-2 MuSig2`), the cosigner atomically locks spent outpoints in SQLite (`l1_signed_outpoints`) and never co-signs a conflicting replacement.
-- **Sovereign unilateral exit:** `buildUserCsvRecoveryTx` spends the Tapscript CSV leaf alone after `nuriServerCsv` expires if the server/cosigner disappears.
+- **Sovereign unilateral exit:** `buildUserCsvRecoveryTx` spends the Tapscript CSV leaf alone after `nuriServerCsv` expires if the server/cosigner disappears. New grants derive the cosigner BTC key via **non-hardened BIP32 (`nuri-btc-cosigner-v4`)** — exact parity with `arkade.nuri.com` / `nuri-signing` — so users can reconstruct `server_pk` -> `internal_key` -> Taproot CSV Control Block offline from their Passkey PRF + published `(account_public_key, account_chain_code)` alone (pre-existing `nuri-agent-btc-cosigner-v1` grants retain automatic read/sign backward compatibility).
 - **Direct on-chain BTC (`bc1...` / BIP21):** 1-tx native L1 MuSig2 spend (`payOnchainBtc`).
 
 ## Payment Flows (Muun `apollo` Model Verified)
@@ -33,7 +33,7 @@ Verified directly against `github.com/muun/apollo` (`fees.go`, `payment_analyzer
 ## Verified Runtime, Security & Compatibility Findings (2026-11-24)
 
 ### 1. Live Cosigner CSV Synchronization (`46.225.135.119:8794`)
-Live `nuri-agent-cosigner` on `46.225.135.119` runs `nuri_server_csv: { type: "blocks", value: 4320 }` (~30 days), whereas the library fallback was `{ type: "seconds", value: 7776256 }` (~90 days). Because `nuriServerCsv` enters the Tapscript leaf and Taproot merkle root, `createAgentL1FronterRuntime` now live-syncs `nuri_server_csv` and `l1_network` from `cosignerClient.healthz()` (5-minute TTL cache) so derived `bc1p...` addresses match byte-for-byte.
+Live `nuri-agent-cosigner` on `46.225.135.119` runs `nuri_server_csv: { type: "blocks", value: 4320 }` (~30 days), whereas the library fallback was `{ type: "seconds", value: 7776256 }` (~90 days). Because `nuriServerCsv` enters the Tapscript leaf and Taproot merkle root, `createAgentL1FronterRuntime` now live-syncs `nuri_server_csv` and `l1_network` from `cosignerClient.healthz()` (5-minute TTL cache) so derived `bc1p...` addresses match byte-for-byte. `nuri-agent-cosigner` also publishes its `nuri-btc-cosigner-v4` public xpub coordinates `(account_public_key, account_chain_code, account_fingerprint)` openly on `GET /healthz` and `GET /v1/btc/account` for offline CSV recovery reconstruction (see [`docs/AGENT-DERIVATION-SPEC.md`](AGENT-DERIVATION-SPEC.md)).
 
 ### 2. Live `@arkade-os/sdk@0.5.8` & `@arkade-os/swap@0.1.8` Probe Fixes
 Probing `https://arkade.computer/v1/info` uncovered three breaking SDK runtime mismatches, all fixed and covered by E2E test #11:
