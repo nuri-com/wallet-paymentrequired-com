@@ -883,6 +883,7 @@ try {
       assert.ok(llms.body.includes(`NEVER send the person to \`${origin}/\``));
       assert.ok(llms.body.includes("Create / Connect Agent Wallet"));
       assert.ok(llms.body.includes("0.00025"));
+      assert.ok(llms.body.includes("https://router.nuri.com/v1/chat/completions"));
       assert.ok(llms.body.includes("https://mail.paymentrequired.com/v1/create_inbox"));
       assert.ok(llms.body.includes("https://browser.paymentrequired.com/v1/browser/open"));
       assert.ok(llms.body.includes("https://vault.paymentrequired.com"));

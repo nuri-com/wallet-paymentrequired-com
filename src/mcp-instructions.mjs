@@ -68,6 +68,7 @@ EXAMPLES
 - ${receiveEx}
 - ${EXAMPLES.find(([, text]) => text.startsWith("pay 402 API"))[1]}
 - ${payEx}
+- delegate to LLM (router.nuri.com) → wallet {action: "pay", wallet_key, to: "https://router.nuri.com/v1/chat/completions", method: "POST", body: {model: "claude-opus-5-5-high", messages: [{role: "user", content: "..."}]}, max_amount: "0.25", request_id} (or POST https://router.nuri.com/v1/credits for 1 USDC streaming credit)
 
 COMPANION TOOLS (separate MCPs — NEVER pass companion MCP URLs like swapkit.nuri.com/mcp or XMR addresses into wallet pay; reply with the companion URL)
 ${COMPANION_DIRECTORY.join("\n")}

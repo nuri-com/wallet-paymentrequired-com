@@ -68,6 +68,7 @@ ${introSub} Passkey-secured (Face ID / Touch ID / smartcard), no seed phrase. Pa
 - \`history\`: \`{"action":"history","wallet_key":"npw1_..."}\`
 
 ## Companion Services
+- LLM Router (30+ models — Claude Opus/Sonnet, Gemini 4, GLM 5.4, Kimi, DeepSeek; pay per call via \`wallet pay\`): \`POST https://router.nuri.com/v1/chat/completions\` with \`{"method":"POST","body":{"model":"claude-opus-5-5-high","messages":[{"role":"user","content":"..."}]},"max_amount":"0.25","request_id":"llm1"}\` (fan out multiple \`request_id\`s in parallel for multi-model councils, or buy a reusable 1 USDC streaming credit at \`https://router.nuri.com/v1/credits\`; catalog & docs: \`https://router.nuri.com/llms.txt\`).
 - Agent email (\`0.01 USDC\` x402 via \`wallet pay\`): \`https://mail.paymentrequired.com/v1/create_inbox\`
 - Paid Chromium browser (\`0.01 USDC\` x402 via \`wallet pay\`): \`https://browser.paymentrequired.com/v1/browser/open\`
 - Encrypted agent vault: \`https://vault.paymentrequired.com\`
@@ -717,6 +718,7 @@ footer a:hover{color:var(--fg)}
     ${btcRailItem}
     <li><span class="ri">◈</span><div><strong>Base USDC &amp; x402 / MPP</strong><p>Pay any HTTP <code>402 Payment Required</code> API (x402, EVM MPP) or <code>0x…</code> address on Base. Gas sponsored.</p></div></li>
     <li><span class="ri">⇄</span><div><strong>Auto cross-rail</strong><p>Hold only Bitcoin? Pay a USDC x402 API. Hold only USDC? Pay a Lightning invoice or <code>bc1…</code> address. Converts automatically under the hood.</p></div></li>
+    <li><span class="ri">⚡</span><div><strong>LLM Router (30+ Models)</strong><p>Delegate to Claude Opus/Sonnet, Gemini 4, GLM 5.4, or fan out 5 models via <code>wallet pay</code> at <a href="https://router.nuri.com">router.nuri.com</a> (x402 USDC or Lightning L402/MPP).</p></div></li>
     <li><span class="ri">☎</span><div><strong>Paid Calls &amp; SMS</strong><p>Live companion at <a href="https://calls.nuri.com">calls.nuri.com</a> — outbound voice calls &amp; SMS paid per call via x402.</p></div></li>
     <li><span class="ri">✉</span><div><strong>Agent Email &amp; Browser</strong><p>Pay $0.01 USDC via <code>wallet pay</code> for <a href="https://mail.paymentrequired.com">mail.paymentrequired.com</a> inboxes or <a href="https://browser.paymentrequired.com">browser.paymentrequired.com</a> Chromium sessions.</p></div></li>
     <li><span class="ri">⛨</span><div><strong>Encrypted Agent Vault</strong><p><a href="https://vault.paymentrequired.com">vault.paymentrequired.com</a> — paid encrypted key-value storage verifying Base Safe owners (<code>isOwner</code> / ERC-1271).</p></div></li>
@@ -766,6 +768,7 @@ curl -sX POST <span class="s">${base}/v1/pay</span> \\
       <ul class="pr">
         <li>check my balance and get a 5000 sat Lightning invoice<span>&rarr; balance + receive (rail: "lightning")</span></li>
         <li>pay $0.01 to create an agent email inbox<span>&rarr; pay https://mail.paymentrequired.com/v1/create_inbox</span></li>
+        <li>ask router.nuri.com to have claude-opus-5-5-high review issue #5<span>&rarr; pay https://router.nuri.com/v1/chat/completions (POST)</span></li>
         <li>send 0.00025 BTC to bc1q…<span>&rarr; pay on-chain BTC (auto-bridges from USDC if needed)</span></li>
         <li>read ${llmsUrl} and set up my wallet<span>&rarr; 1-URL onboarding for Claude, ChatGPT, Codex &amp; Goose</span></li>
       </ul>

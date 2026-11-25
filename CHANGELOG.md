@@ -5,6 +5,10 @@ flowchart LR
   A[c16ab56 monolith] --> B[0.76.0-alpha.1 wallet repository staging]
 ```
 
+## Unreleased — Add `router.nuri.com` LLM delegation to wallet docs, UI, and MCP instructions (2026-11-25)
+
+- Add `https://router.nuri.com/v1/chat/completions` and `/v1/credits` delegation examples (single-call Claude Opus/Sonnet/Gemini/GLM and parallel multi-model councils via `wallet pay`) to `/llms.txt`, `/skill.md`, the wallet homepage (`src/service-index.mjs`), MCP tool instructions (`src/mcp-instructions.mjs`), and `scripts/check-cross-rail-v2.mjs`.
+
 ## Unreleased — `nuri-btc-cosigner-v4` non-hardened BIP32 BTC derivation docs (2026-11-25)
 
 - Update `docs/AGENT-DERIVATION-SPEC.md`, `docs/L1-0CONF-ARKADE-FRONTER.md`, `docs/CUSTODY-EVOLUTION.md`, and `README.md` to document canonical **non-hardened BIP32 (`nuri-btc-cosigner-v4`)** Bitcoin cosigner derivation (exact parity with `arkade.nuri.com` / `nuri-signing`, publishing `(account_public_key, account_chain_code, account_fingerprint)` on `/healthz` and `/v1/btc/account` for single-passkey offline Taproot CSV Control Block recovery), automatic read/sign backward compatibility for pre-existing `nuri-agent-btc-cosigner-v1` grants, and unchanged hardened `HMAC-SHA512` (`nuri-agent-evm-cosigner-v1`) EVM Safe derivation.
